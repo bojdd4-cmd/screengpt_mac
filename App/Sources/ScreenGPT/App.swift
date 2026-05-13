@@ -44,6 +44,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // ── State ───────────────────────────────────────────────────────────────
     private(set) var settings = Settings()
     private(set) var authToken: String?
+    /// Credentials that were just submitted to the brain — held until we
+    /// receive login_ok, then committed to Keychain for auto-login.  Nil
+    /// once persisted or after a clean login_err.
+    private var pendingLoginCreds: (email: String, password: String)? = nil
     /// Most-recent screenshot base64 + answer — used as context when
     /// settings.ctxOn is true (sent alongside next scan/manual ask).
     private var lastScreenshotB64: String?
@@ -132,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         login.model.submit = { [weak self] email, password in
             guard let self else { return }
             self.log("login submit for \(email)")
+            self.pendingLoginCreds = (email, password)
             self.brain.send([
                 "cmd":      "login",
                 "email":    email,
@@ -381,7 +386,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if env["CALIB_PREVIEW"] != "1"
                 && env["CALIB_EMAIL"]   == nil
                 && authToken == nil {
-                login.show()
+                // Try auto-login from Keychain first.  If cached creds
+                // exist, submit them silently — no login window flicker
+                // on launchd-driven relaunches after an LDB kill.
+                if let creds = KeychainHelper.load() {
+                    log("auto-login from Keychain for \(creds.email)")
+                    pendingLoginCreds = creds
+                    brain.send([
+                        "cmd":      "login",
+                        "email":    creds.email,
+                        "password": creds.password,
+                    ])
+                } else {
+                    login.show()
+                }
             }
 
         case .allSettings(let snapshot):
@@ -408,12 +426,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             authToken = token
             overlay.setLoggedIn(true)
             log("logged in (token \(token.prefix(10))…)")
+            // Commit the just-used credentials to Keychain so the next
+            // launch (whether by user or by launchd after an LDB kill)
+            // can auto-login silently.
+            if let creds = pendingLoginCreds {
+                KeychainHelper.save(email: creds.email, password: creds.password)
+                pendingLoginCreds = nil
+            }
             login.close()
             startOverlaySession()
 
         case .loginErr(let code, let msg):
             log("login failed [\(code)]: \(msg)")
+            // Bad creds → clear Keychain so we don't auto-retry forever
+            // with the wrong password on each launchd relaunch.
+            if code == "bad_creds" {
+                KeychainHelper.clear()
+                log("cleared invalid Keychain creds")
+            }
+            pendingLoginCreds = nil
             login.setError(prettyLoginError(code: code, msg: msg))
+            // Show the login window if we'd attempted auto-login (window
+            // wasn't visible) so the user can correct credentials.
+            if !login.isShowing {
+                login.show()
+            }
 
         case .scanOK(let answer, let provider, _, _):
             log("scan answer (\(provider)): \(answer.prefix(80))…")

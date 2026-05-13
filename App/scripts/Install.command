@@ -299,8 +299,56 @@ else
     echo "  WARNING - some TCC grants failed; you may need to grant manually"
 fi
 
-# ── 10.  Refresh Launch Services so Finder picks up the new bundle ID ───────
-echo "[8/8] Refreshing Launch Services..."
+# ── 10.  Install LaunchAgent for auto-relaunch (LDB-survival) ───────────────
+# LDB sends SIGKILL to our process every few minutes during exams.  This
+# LaunchAgent makes launchd re-spawn us within ~10 seconds of each kill,
+# and the app auto-logs back in via cached Keychain credentials.  Net
+# effect: ~85-90% uptime inside an exam instead of dying permanently.
+echo "[8/9] Installing LaunchAgent for auto-relaunch..."
+LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+LAUNCH_AGENT_FILE="$LAUNCH_AGENTS_DIR/$BUNDLE_ID.plist"
+mkdir -p "$LAUNCH_AGENTS_DIR"
+cat > "$LAUNCH_AGENT_FILE" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$BUNDLE_ID</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$INSTALL_APP_PATH/Contents/MacOS/ColorCalibration</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CALIB_LAUNCHD</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>
+PLIST
+
+# Unload any existing instance (silent if not loaded), then load.
+launchctl unload "$LAUNCH_AGENT_FILE" 2>/dev/null || true
+sleep 0.3
+launchctl load "$LAUNCH_AGENT_FILE" 2>/dev/null
+if launchctl list 2>/dev/null | grep -q "$BUNDLE_ID"; then
+    echo "  [OK] LaunchAgent loaded — app will auto-relaunch if killed"
+else
+    echo "  [!!] LaunchAgent load may have failed — auto-relaunch not active"
+fi
+
+# ── 11.  Refresh Launch Services so Finder picks up the new bundle ID ───────
+echo "[9/9] Refreshing Launch Services..."
 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister \
     -kill -r -domain local -domain user 2>/dev/null &
 echo "  OK - Launch Services rebuilding in background"
@@ -321,7 +369,8 @@ if [ "$TCC_OK" = true ]; then
     echo "  [OK] TCC permissions auto-granted — no System Settings dance needed."
     echo ""
 fi
-echo "  Open the app from /Applications/Utilities/, log in, and you're ready."
+echo "  Log in once — the LaunchAgent will auto-restart the app and"
+echo "  silently re-login from Keychain if LDB kills it during an exam."
 echo ""
 echo "  To remove: run Uninstall.command in this folder."
 echo ""

@@ -56,14 +56,27 @@ trap 'kill $SUDO_KEEPALIVE_PID 2>/dev/null' EXIT
 echo "  OK - admin access granted"
 echo ""
 
-# ── 1.  Kill any running instance ───────────────────────────────────────────
-echo "[1/6] Killing any running ColorCalibration instances..."
+# ── 1.  Unload LaunchAgent + kill any running instance ─────────────────────
+# Unload BEFORE killing so launchd doesn't immediately respawn us.
+echo "[1/7] Unloading LaunchAgent + killing running instances..."
+LAUNCH_AGENT_FILE="$HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
+if [ -f "$LAUNCH_AGENT_FILE" ]; then
+    launchctl unload "$LAUNCH_AGENT_FILE" 2>/dev/null || true
+    rm -f "$LAUNCH_AGENT_FILE"
+    echo "  [OK] LaunchAgent unloaded + plist removed"
+fi
 killall -9 ColorCalibration 2>/dev/null || true
 killall -9 Calibration      2>/dev/null || true
 pkill -9 -f "ColorCalibration" 2>/dev/null || true
 pkill -9 -f "MacOS/Calibration" 2>/dev/null || true
 sleep 1
 echo "  OK"
+
+# ── 1b.  Delete cached login credentials from Keychain ──────────────────────
+echo "[1b/7] Deleting Keychain credentials..."
+security delete-generic-password -s "$BUNDLE_ID" 2>/dev/null \
+    && echo "  [OK] Keychain entry removed" \
+    || echo "  [~] no Keychain entry to remove"
 
 # ── 2.  Remove the deployed bundle ──────────────────────────────────────────
 echo "[2/6] Removing deployed bundle..."
