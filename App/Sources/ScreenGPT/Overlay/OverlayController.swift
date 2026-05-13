@@ -229,19 +229,25 @@ final class OverlayController {
     }
 
     /// Build a new overlay NSPanel with all the LDB-survival flags applied.
-    /// The OverlayDefender re-applies a subset of these (level, ordering)
-    /// every 250 ms via `applyProtection`.
     private func makeOverlayPanel(size: NSSize) -> NSPanel {
-        // .nonactivatingPanel — doesn't bring our app forward when shown,
-        //   so LDB stays the frontmost app and "hide other apps" semantics
-        //   target someone else, not us.
-        // .borderless — no titlebar, just our SwiftUI content.
-        let panel = NSPanel(
+        // FocusablePanel subclass overrides canBecomeKey to return true
+        // EVEN with .nonactivatingPanel set, so:
+        //   • .nonactivatingPanel  → app doesn't activate when panel
+        //                            becomes key (LDB stays frontmost)
+        //   • canBecomeKey=true    → text fields, WKWebView, SwiftUI
+        //                            DragGesture all work because they
+        //                            need first-responder status
+        let panel = FocusablePanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
+        // Belt-and-suspenders: force the content size explicitly in case
+        // the initialiser interpreted contentRect differently for our
+        // styleMask combination.
+        panel.setContentSize(size)
+        NSLog("[ScreenGPT] panel created size=\(size.width)×\(size.height)")
 
         // Float above all other windows in the app — but the real "above
         // LDB" magic happens via window.level below.
@@ -482,3 +488,25 @@ final class OverlayController {
 
 // OverlayModel lives in OverlayModel.swift so PlaceholderView.swift can
 // see it during cross-file Swift compilation.
+
+// =============================================================================
+//  FocusablePanel
+// =============================================================================
+//
+//  NSPanel subclass that overrides canBecomeKey to return true even when
+//  the panel uses .nonactivatingPanel.  Without this override, an
+//  .nonactivatingPanel can't become the key window, which means:
+//
+//    • WKWebView (embedded browser) doesn't receive clicks on form inputs
+//    • SwiftUI TextField doesn't receive focus on click
+//    • SwiftUI DragGesture (the resize grip) doesn't fire
+//
+//  Combining canBecomeKey=true WITH .nonactivatingPanel gives us the best
+//  of both worlds: the panel CAN become key (so controls work), but the
+//  app doesn't activate when it does (so LDB stays frontmost).
+//
+
+final class FocusablePanel: NSPanel {
+    override var canBecomeKey:  Bool { true }
+    override var canBecomeMain: Bool { false }
+}
