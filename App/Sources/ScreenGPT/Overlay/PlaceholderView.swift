@@ -46,19 +46,9 @@ struct PlaceholderPanelView: View {
             if model.providerDropdownExpanded {
                 providerDropdown
             }
-
-            // Resize grip — bottom-right corner of the panel, sits in
-            // its own overlay so it lives at the very edge instead of
-            // crowding the manual-input HStack.
-            VStack {
-                Spacer(minLength: 0)
-                HStack {
-                    Spacer(minLength: 0)
-                    ResizeGrip(tint: secondaryText.opacity(0.55))
-                        .padding(.trailing, 4)
-                        .padding(.bottom, 4)
-                }
-            }
+            // No SwiftUI resize grip — AppKit's .resizable styleMask
+            // handles edge-drag resize natively (diagonal cursor at
+            // corner, no SwiftUI re-render lag).
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
@@ -543,10 +533,7 @@ struct PlaceholderPanelView: View {
             .buttonStyle(.plain)
             .disabled(model.manualInput.trimmingCharacters(in: .whitespaces).isEmpty)
         }
-        // Extra right padding keeps the send button clear of the corner
-        // resize grip (which lives in the outer ZStack overlay).
-        .padding(.leading, 12)
-        .padding(.trailing, 32)
+        .padding(.horizontal, 12)
         .padding(.bottom, 6)
     }
 
@@ -627,101 +614,6 @@ struct PlaceholderBubbleView: View {
             )
             .shadow(color: .black.opacity(0.35), radius: 14, x: 0, y: 6)
             .ignoresSafeArea()
-    }
-}
-
-// =============================================================================
-//  ResizeGrip — bigger, easier to click, visible affordance
-// =============================================================================
-
-struct ResizeGrip: View {
-    let tint: Color
-    @State private var startFrame: NSRect?
-    @State private var cachedPanel: NSWindow?
-
-    var body: some View {
-        // Diagonal-hash visual — three short strokes forming the classic
-        // bottom-right corner resize affordance.
-        Canvas { ctx, size in
-            let s = size.width
-            let stroke = StrokeStyle(lineWidth: 1.6, lineCap: .round)
-            for offset in [0.20, 0.50, 0.80] {
-                var path = Path()
-                path.move(to:    CGPoint(x: s - 2,        y: s * offset + 2))
-                path.addLine(to: CGPoint(x: s * offset + 2, y: s - 2))
-                ctx.stroke(path, with: .color(tint), style: stroke)
-            }
-        }
-        .frame(width: 16, height: 16)
-        // 28×28 hit area is generous enough to grab without precision
-        // mousing, but doesn't crowd the send button beside it.
-        .frame(width: 28, height: 28)
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                .onChanged { value in
-                    let win = panelWindow()
-                    guard let win else { return }
-                    if startFrame == nil { startFrame = win.frame }
-                    guard let s = startFrame else { return }
-                    let newW = max(420, s.width  + value.translation.width)
-                    let newH = max(280, s.height + value.translation.height)
-                    let topY = s.origin.y + s.height
-                    let newY = topY - newH
-                    // display: false lets AppKit batch redraws on the next
-                    // runloop tick instead of forcing a synchronous redraw
-                    // per drag tick — much smoother during a fast drag.
-                    win.setFrame(
-                        NSRect(x: s.origin.x, y: newY, width: newW, height: newH),
-                        display: false
-                    )
-                }
-                .onEnded { _ in
-                    startFrame = nil
-                    // One synchronous redraw at the end to finalise layout.
-                    panelWindow()?.displayIfNeeded()
-                }
-        )
-        // Diagonal two-headed arrow on hover — built from an SF Symbol
-        // because NSCursor has no public NW-SE resize cursor.  Cached
-        // statically so we don't rebuild on every hover event.
-        .onContinuousHover { phase in
-            switch phase {
-            case .active: Self.diagonalResizeCursor.set()
-            case .ended:  NSCursor.arrow.set()
-            }
-        }
-    }
-
-    /// SF-Symbol-derived diagonal resize cursor (↖↘).  Built once and
-    /// reused — NSCursor construction allocates an NSImage which we
-    /// don't want repeating on every hover tick.
-    private static let diagonalResizeCursor: NSCursor = {
-        let symbol = "arrow.up.left.and.arrow.down.right"
-        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-            .applying(.init(paletteColors: [.white]))
-        guard let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-                .withSymbolConfiguration(config)
-        else {
-            return NSCursor.resizeLeftRight   // fallback
-        }
-        img.isTemplate = false
-        return NSCursor(image: img, hotSpot: NSPoint(x: img.size.width / 2,
-                                                     y: img.size.height / 2))
-    }()
-
-    /// Cache + return the overlay panel.  NSApp.windows linear scan was
-    /// being called dozens of times per drag tick; caching avoids the
-    /// repeated allocations under fast cursor motion.
-    private func panelWindow() -> NSWindow? {
-        if let p = cachedPanel, p.isVisible { return p }
-        let found = NSApp.windows.first {
-            $0.contentViewController is NSHostingController<PlaceholderPanelView>
-        }
-        // @State is value-type; capturing won't actually mutate.  But
-        // this is fine — next drag tick re-uses the same window most
-        // likely, and the scan is fast either way.
-        return found
     }
 }
 

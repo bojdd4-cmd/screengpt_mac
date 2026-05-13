@@ -241,14 +241,17 @@ final class OverlayController {
         //                            need first-responder status
         let panel = FocusablePanel(
             contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.borderless, .nonactivatingPanel],
+            // .resizable lets AppKit handle edge-resize natively: the
+            // diagonal-arrow cursor appears at the corner, the OS does
+            // the actual frame mutation.  Zero SwiftUI re-render lag.
+            styleMask: [.borderless, .nonactivatingPanel, .resizable],
             backing: .buffered,
             defer: false
         )
-        // Belt-and-suspenders: force the content size explicitly in case
-        // the initialiser interpreted contentRect differently for our
-        // styleMask combination.
         panel.setContentSize(size)
+        // Min size — AppKit clamps the native resize to this lower bound.
+        // No max size — user can grow as large as their screen allows.
+        panel.minSize = NSSize(width: 420, height: 280)
         let role = (size == panelSize) ? "main-overlay" : "cursor-bubble"
         Log.write("\(role) panel created size=\(Int(size.width))×\(Int(size.height))")
 
