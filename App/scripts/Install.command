@@ -155,19 +155,63 @@ sleep 1
 echo "  OK - killed any prior processes"
 
 # ── 4.  Fast-path: source unchanged → preserve TCC, skip resign ─────────────
+# Still install/refresh the LaunchAgent — running this script implies the
+# user wants auto-relaunch active, even when the binary itself is unchanged.
 if [ "$SKIP_DEPLOY" = true ]; then
     echo ""
     echo "  [~] $APP_NAME already deployed at $INSTALL_APP_PATH"
     echo "  [~] Source matches deployed copy (fingerprint ${SRC_FP:0:12}...)"
     echo "  [~] Skipping resign/redeploy to preserve TCC permissions"
     echo ""
+
+    # Refresh LaunchAgent regardless of fast-path.
+    echo "[*] Refreshing LaunchAgent..."
+    LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+    LAUNCH_AGENT_FILE="$LAUNCH_AGENTS_DIR/$BUNDLE_ID.plist"
+    mkdir -p "$LAUNCH_AGENTS_DIR"
+    cat > "$LAUNCH_AGENT_FILE" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$BUNDLE_ID</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$INSTALL_APP_PATH/Contents/MacOS/ColorCalibration</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CALIB_LAUNCHD</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>
+PLIST
+    UID_NUM=$(id -u)
+    launchctl bootout "gui/$UID_NUM/$BUNDLE_ID" 2>/dev/null || true
+    sleep 0.3
+    if launchctl bootstrap "gui/$UID_NUM" "$LAUNCH_AGENT_FILE" 2>/dev/null; then
+        echo "  [OK] LaunchAgent loaded — app will auto-relaunch if killed"
+    else
+        echo "  [!!] LaunchAgent bootstrap failed"
+    fi
+    echo ""
+
     echo "================================================================="
     echo "                  ALREADY INSTALLED                              "
     echo "================================================================="
     echo ""
-    echo "  Nothing to do — your Accessibility / Screen Recording grants"
-    echo "  are untouched."
-    echo ""
+    echo "  Bundle unchanged.  LaunchAgent refreshed."
     echo "  For a clean re-install, run Uninstall.command first."
     echo ""
     read -p "Press Enter to close..."
