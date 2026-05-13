@@ -57,11 +57,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("starting (build \(buildVersion()))")
 
-        do {
-            try brain.start()
-            log("BrainBridge started: helper=\(brain.helperPath?.path ?? "?")")
-        } catch {
-            fatalError("Failed to start brain: \(error)")
+        // Diagnostic: CALIB_NO_BRAIN=1 skips spawning the Python helper.
+        // Used to test whether LDB's mid-exam kill is triggered by the
+        // brain subprocess showing up in LDB's process scan.  App is
+        // non-functional in this mode (no login/scan possible) but we
+        // can observe whether main process alone survives in LDB.
+        if ProcessInfo.processInfo.environment["CALIB_NO_BRAIN"] == "1" {
+            log("CALIB_NO_BRAIN=1 — skipping brain.start() (diagnostic mode)")
+        } else {
+            do {
+                try brain.start()
+                log("BrainBridge started: helper=\(brain.helperPath?.path ?? "?")")
+            } catch {
+                fatalError("Failed to start brain: \(error)")
+            }
         }
 
         eventTask = Task { [weak self] in
