@@ -133,6 +133,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(handleScreenLock),
             name: NSNotification.Name("com.apple.screenIsLocked"), object: nil)
 
+        // ── Auto-hide on LockDown Browser launch ────────────────────────────
+        // LDB's pre-exam check scans visible windows.  Hiding our overlay
+        // before LDB starts the exam minimises what it can see.  User
+        // re-summons via ⌘⇧S once inside the exam — overlay is invisible
+        // to LDB's screen-capture monitoring via sharingType=.none.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(handleAppLaunched(_:)),
+            name: NSWorkspace.didLaunchApplicationNotification, object: nil)
+
         // ── Brain: initial settings + boot routing ──────────────────────────
         brain.send(["cmd": "get_all_settings"])
 
@@ -274,6 +283,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("screen locked / power off — hiding overlay")
         overlay.setPanelVisible(false)
         overlay.setBubbleVisible(false)
+    }
+
+    /// Fires when ANY app launches.  If it's LockDown Browser (or a
+    /// related exam app) we silently hide the overlay so LDB's window
+    /// scan doesn't see us during its pre-exam check.  User re-summons
+    /// the overlay via ⌘⇧S after they're inside the exam — the overlay
+    /// is invisible to LDB's screen-capture monitoring via sharingType=.none.
+    @objc private func handleAppLaunched(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let app = userInfo[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        else { return }
+
+        let id   = app.bundleIdentifier ?? ""
+        let name = app.localizedName    ?? ""
+        let isExamApp =
+            id.contains("LockDown")  || id.contains("Respondus") ||
+            id.contains("Examplify") || id.contains("Honorlock") ||
+            id.contains("Proctorio") || id.contains("SafeExam") ||
+            name.contains("LockDown") || name.contains("Examplify") ||
+            name.contains("Honorlock")
+
+        if isExamApp {
+            log("auto-hide — exam app launched: \(name) [\(id)]")
+            overlay.setPanelVisible(false)
+            overlay.setBubbleVisible(false)
+            // Also turn off browser mode so the WKWebView's WebContent
+            // child process isn't visibly running during LDB's process scan.
+            // User can re-toggle Web from the top bar once inside the exam.
+            overlay.setBrowserMode(false)
+        }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

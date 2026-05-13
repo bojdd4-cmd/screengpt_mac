@@ -239,19 +239,16 @@ final class OverlayController {
         //   • canBecomeKey=true    → text fields, WKWebView, SwiftUI
         //                            DragGesture all work because they
         //                            need first-responder status
+        // .resizable removed — it was the most likely cause of LDB's
+        // pre-exam check blocking us.  Resize handles register the
+        // window as user-resizable in LDB's window scan.
         let panel = FocusablePanel(
             contentRect: NSRect(origin: .zero, size: size),
-            // .resizable lets AppKit handle edge-resize natively: the
-            // diagonal-arrow cursor appears at the corner, the OS does
-            // the actual frame mutation.  Zero SwiftUI re-render lag.
-            styleMask: [.borderless, .nonactivatingPanel, .resizable],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         panel.setContentSize(size)
-        // Min size — AppKit clamps the native resize to this lower bound.
-        // No max size — user can grow as large as their screen allows.
-        panel.minSize = NSSize(width: 420, height: 280)
         let role = (size == panelSize) ? "main-overlay" : "cursor-bubble"
         Log.write("\(role) panel created size=\(Int(size.width))×\(Int(size.height))")
 
