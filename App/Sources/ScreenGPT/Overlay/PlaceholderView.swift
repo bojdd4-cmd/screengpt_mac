@@ -562,22 +562,24 @@ struct PlaceholderPanelView: View {
 //  ThinkingDots
 // =============================================================================
 
+/// Three-dot loading indicator.  Uses TimelineView (SwiftUI native)
+/// rather than Timer.scheduledTimer — TimelineView auto-stops when the
+/// view leaves the hierarchy, no orphan timers accumulating.  The
+/// previous Timer-based implementation leaked one timer per scan,
+/// causing app-wide SwiftUI re-render lag after a few scans.
 struct ThinkingDots: View {
-    @State private var phase: Int = 0
     var body: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<3) { idx in
-                Circle()
-                    .fill(Color.blue.opacity(0.85))
-                    .frame(width: 5, height: 5)
-                    .scaleEffect(phase == idx ? 1.4 : 0.85)
-                    .opacity(phase == idx ? 1.0 : 0.55)
-                    .animation(.easeInOut(duration: 0.4), value: phase)
-            }
-        }
-        .onAppear {
-            Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { _ in
-                phase = (phase + 1) % 3
+        TimelineView(.periodic(from: .now, by: 0.35)) { ctx in
+            let phase = Int(ctx.date.timeIntervalSinceReferenceDate / 0.35) % 3
+            HStack(spacing: 3) {
+                ForEach(0..<3) { idx in
+                    Circle()
+                        .fill(Color.blue.opacity(0.85))
+                        .frame(width: 5, height: 5)
+                        .scaleEffect(phase == idx ? 1.4 : 0.85)
+                        .opacity(phase == idx ? 1.0 : 0.55)
+                        .animation(.easeInOut(duration: 0.3), value: phase)
+                }
             }
         }
     }
@@ -680,16 +682,33 @@ struct ResizeGrip: View {
                     panelWindow()?.displayIfNeeded()
                 }
         )
-        // Two-headed arrow resize cursor when hovering.  Built-in
-        // .resizeLeftRight is the closest public NSCursor — clearer
-        // affordance than the lag-prone crosshair previously used.
+        // Diagonal two-headed arrow on hover — built from an SF Symbol
+        // because NSCursor has no public NW-SE resize cursor.  Cached
+        // statically so we don't rebuild on every hover event.
         .onContinuousHover { phase in
             switch phase {
-            case .active: NSCursor.resizeLeftRight.set()
+            case .active: Self.diagonalResizeCursor.set()
             case .ended:  NSCursor.arrow.set()
             }
         }
     }
+
+    /// SF-Symbol-derived diagonal resize cursor (↖↘).  Built once and
+    /// reused — NSCursor construction allocates an NSImage which we
+    /// don't want repeating on every hover tick.
+    private static let diagonalResizeCursor: NSCursor = {
+        let symbol = "arrow.up.left.and.arrow.down.right"
+        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+            .applying(.init(paletteColors: [.white]))
+        guard let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+                .withSymbolConfiguration(config)
+        else {
+            return NSCursor.resizeLeftRight   // fallback
+        }
+        img.isTemplate = false
+        return NSCursor(image: img, hotSpot: NSPoint(x: img.size.width / 2,
+                                                     y: img.size.height / 2))
+    }()
 
     /// Cache + return the overlay panel.  NSApp.windows linear scan was
     /// being called dozens of times per drag tick; caching avoids the
