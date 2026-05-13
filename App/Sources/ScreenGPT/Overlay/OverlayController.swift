@@ -247,7 +247,8 @@ final class OverlayController {
         // the initialiser interpreted contentRect differently for our
         // styleMask combination.
         panel.setContentSize(size)
-        Log.write("panel created size=\(Int(size.width))×\(Int(size.height)) frame=\(panel.frame)")
+        let role = (size == panelSize) ? "main-overlay" : "cursor-bubble"
+        Log.write("\(role) panel created size=\(Int(size.width))×\(Int(size.height))")
 
         // Float above all other windows in the app — but the real "above
         // LDB" magic happens via window.level below.
