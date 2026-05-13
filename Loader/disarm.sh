@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  disarm.sh — remove the DYLD injection env vars
+#  disarm.sh — kill the injected LDB session
 # =============================================================================
 #
-#  Inverse of arm.sh.  After this, new launches of LDB (or any other app)
-#  will NOT load libscreengpt.dylib.  Already-running LDB instances keep
-#  whatever they loaded — kill them too if you want a fully clean state.
-#
-#  Note: launchctl unsetenv is sticky for the current GUI session, but to
-#  truly remove from the persistent boot-environment, a Mac restart is
-#  needed.  Matches CloakGPT's own behaviour.
+#  Since arm.sh now launches LDB directly with env vars set in its
+#  exec context (rather than via launchctl setenv which Apple silently
+#  blocks for DYLD_*), there's no persistent session-level env to
+#  "unset".  Disarming just means killing the currently-running LDB
+#  so the next manual launch of LDB (via Spotlight/Finder) starts
+#  clean without our dylib.
 #
 # =============================================================================
 
@@ -18,24 +17,22 @@ set -euo pipefail
 clear
 echo ""
 echo "  +===============================================================+"
-echo "  |             ScreenGPT — Disarming DYLD injection              |"
+echo "  |             ScreenGPT — Disarming injection                   |"
 echo "  +===============================================================+"
 echo ""
 
-launchctl unsetenv DYLD_INSERT_LIBRARIES 2>/dev/null && \
-    echo "  [OK] cleared DYLD_INSERT_LIBRARIES" || \
-    echo "  [~]  DYLD_INSERT_LIBRARIES was not set"
+# Belt + suspenders: clear any stale launchctl env vars in case an
+# older arm.sh did set them.
+launchctl unsetenv DYLD_INSERT_LIBRARIES 2>/dev/null || true
+launchctl unsetenv SGPT_TARGET 2>/dev/null || true
 
-launchctl unsetenv SGPT_TARGET 2>/dev/null && \
-    echo "  [OK] cleared SGPT_TARGET" || \
-    echo "  [~]  SGPT_TARGET was not set"
-
-# Optionally kill LDB to force fresh launch without the dylib.
-read -p "  Also kill any running LockDown Browser? [y/N] " ANS
-if [ "${ANS:-N}" = "y" ] || [ "${ANS:-N}" = "Y" ]; then
+# Kill the injected LDB.
+if pgrep -f "LockDown Browser" >/dev/null 2>&1; then
     killall -9 "LockDown Browser" 2>/dev/null && \
-        echo "  [OK] killed LockDown Browser" || \
-        echo "  [~]  LDB wasn't running"
+        echo "  [OK] killed running LDB" || \
+        echo "  [~]  LDB was already gone"
+else
+    echo "  [~]  LDB wasn't running"
 fi
 
 echo ""
@@ -43,6 +40,6 @@ echo "================================================================="
 echo "                         DISARMED"
 echo "================================================================="
 echo ""
-echo "  New launches of LDB will NOT load libscreengpt.dylib."
-echo "  For a fully-clean boot environment, restart your Mac."
+echo "  Future LDB launches (via Spotlight, Finder, etc.) will NOT"
+echo "  load libscreengpt.dylib unless you re-run ./arm.sh."
 echo ""

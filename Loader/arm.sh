@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  arm.sh — arm DYLD injection for the next launch of LockDown Browser
+#  arm.sh — arm + launch LDB with DYLD injection inline
 # =============================================================================
 #
-#  Sets the launchctl-scope environment variables that cause dyld to load
-#  libscreengpt.dylib into LDB the next time it starts.  Also kills any
-#  currently-running LDB so the next launch picks up the new env.
+#  Modern macOS (Sonoma+ / Tahoe) silently blocks `launchctl setenv` for
+#  security-sensitive keys like DYLD_INSERT_LIBRARIES — setenv "succeeds"
+#  but the value never persists.  Apple's hardening against runtime
+#  injection via launchd session env.
 #
-#  Inverse: ./disarm.sh
+#  Workaround: directly exec LockDown Browser from this script with the
+#  env vars set INLINE in the exec context.  POSIX env inheritance still
+#  works — LDB sees DYLD_INSERT_LIBRARIES because it was its parent
+#  shell's environment, and dyld (with AMFI off) loads our dylib into
+#  the new LDB process.
+#
+#  Inverse: ./disarm.sh   (kills LDB, that's all we need now)
 #
 #  Requires:
-#      • SIP disabled  (otherwise launchctl setenv is blocked for some keys)
-#      • AMFI disabled (otherwise hardened-runtime LDB ignores DYLD_INSERT)
-#      • libscreengpt.dylib already built + deployed by ./build_dylib.sh
+#      • SIP disabled
+#      • AMFI disabled (boot-arg amfi_get_out_of_my_way=1)
+#      • libscreengpt.dylib built + deployed by ./build_dylib.sh
 #
 # =============================================================================
 
@@ -20,88 +27,114 @@ set -euo pipefail
 
 DYLIB_PATH=/usr/local/lib/libscreengpt.dylib
 LOG_PATH=/tmp/screengpt_dylib.log
-
-# Target match string — sgpt_should_activate_in_this_process() in the
-# dylib compares this case-insensitively against the host's bundle ID
-# and executable path.  "LockDownBrowser" matches both bundle ID
-# (com.respondus.lockdownbrowser) and exe name (LockDown Browser).
+LDB_APP="/Applications/LockDown Browser.app"
+LDB_EXE="$LDB_APP/Contents/MacOS/LockDown Browser"
 TARGET=LockDownBrowser
 
 clear
 echo ""
 echo "  +===============================================================+"
-echo "  |              ScreenGPT — Arming DYLD injection                |"
+echo "  |        ScreenGPT — Arming + launching LDB with injection      |"
 echo "  +===============================================================+"
 echo ""
 
-# ── 1.  Sanity: dylib exists and is signed ─────────────────────────────────
+# ── 1.  Sanity ─────────────────────────────────────────────────────────────
 if [ ! -f "$DYLIB_PATH" ]; then
     echo "  ERROR: $DYLIB_PATH not found."
     echo "  Run ./build_dylib.sh first."
     exit 1
 fi
 if ! codesign --verify "$DYLIB_PATH" 2>/dev/null; then
-    echo "  WARN: $DYLIB_PATH is not signed — attempting ad-hoc resign..."
+    echo "  WARN: dylib not signed, ad-hoc resigning..."
     codesign --force --sign - "$DYLIB_PATH" || {
-        echo "  ERROR: codesign failed.  Re-run ./build_dylib.sh."
-        exit 1
+        echo "  ERROR: codesign failed."; exit 1
     }
 fi
-echo "  [OK] dylib present + signed: $DYLIB_PATH"
+echo "  [OK] dylib: $DYLIB_PATH"
 
-# ── 2.  Pre-flight: SIP + AMFI must be off ─────────────────────────────────
+if [ ! -d "$LDB_APP" ]; then
+    echo "  ERROR: LockDown Browser not found at $LDB_APP"
+    echo "  Install LDB before running this script."
+    exit 1
+fi
+echo "  [OK] LDB:   $LDB_APP"
+
+# ── 2.  SIP + AMFI ─────────────────────────────────────────────────────────
 echo ""
-echo "  Pre-flight check..."
+echo "  Pre-flight..."
 if csrutil status 2>/dev/null | grep -q "disabled"; then
-    echo "  [OK] SIP: disabled"
+    echo "  [OK] SIP disabled"
 else
-    echo "  [!!] SIP is enabled.  DYLD injection will fail."
-    echo "       Boot to Recovery → Terminal → csrutil disable → reboot."
+    echo "  [!!] SIP enabled — injection will fail."
+    echo "       Boot Recovery → csrutil disable → reboot"
     exit 1
 fi
 if nvram -p 2>/dev/null | grep -q "amfi_get_out_of_my_way=1"; then
-    echo "  [OK] AMFI: disabled"
+    echo "  [OK] AMFI disabled"
 else
-    echo "  [!!] AMFI is enabled.  DYLD injection into hardened-runtime LDB"
-    echo "       will be ignored."
-    echo "       Run: sudo nvram boot-args=\"amfi_get_out_of_my_way=1\""
-    echo "       Then: sudo reboot"
+    echo "  [!!] AMFI enabled — dyld will ignore DYLD_INSERT_LIBRARIES on LDB."
+    echo "       sudo nvram boot-args=\"amfi_get_out_of_my_way=1\" && sudo reboot"
     exit 1
 fi
 
-# ── 3.  Set the launchctl-scope env vars ───────────────────────────────────
-echo ""
-echo "  Setting launchctl env vars..."
-launchctl setenv DYLD_INSERT_LIBRARIES "$DYLIB_PATH"
-launchctl setenv SGPT_TARGET "$TARGET"
-echo "  [OK] DYLD_INSERT_LIBRARIES = $DYLIB_PATH"
-echo "  [OK] SGPT_TARGET           = $TARGET"
-
-# ── 4.  Kill running LDB so the next launch picks up env ───────────────────
+# ── 3.  Kill running LDB so we can launch fresh ────────────────────────────
 echo ""
 echo "  Killing running LDB (if any)..."
 killall -9 "LockDown Browser" 2>/dev/null && echo "  [OK] killed LockDown Browser" \
                                           || echo "  [~]  LDB wasn't running"
+# Give macOS a moment to fully terminate helpers + release ports
+sleep 1
 
-# ── 5.  Reset the log so this run is isolated ──────────────────────────────
+# ── 4.  Reset log so this run is isolated ──────────────────────────────────
 > "$LOG_PATH" 2>/dev/null || true
 
+# ── 5.  Launch LDB inline with DYLD env in our exec context ───────────────
+#
+# Why this works when launchctl setenv doesn't: macOS blocks
+# launchctl setenv DYLD_* as hardening, BUT the POSIX env inheritance
+# from a shell to its exec'd child is unrestricted.  We set the env
+# variables in THIS shell's environment, then exec LDB — LDB inherits
+# them as part of its initial env block, and dyld (with AMFI off)
+# honors them.
+#
+# We use `nohup ... &` + `disown` so:
+#   • LDB runs detached from this shell (closes Terminal → LDB lives)
+#   • Output goes to /dev/null (no terminal pollution)
+#   • Our shell can exit immediately
+echo ""
+echo "  Launching LDB with injection..."
+echo "    DYLD_INSERT_LIBRARIES = $DYLIB_PATH"
+echo "    SGPT_TARGET           = $TARGET"
+echo ""
+
+DYLD_INSERT_LIBRARIES="$DYLIB_PATH" \
+SGPT_TARGET="$TARGET" \
+nohup "$LDB_EXE" >/dev/null 2>&1 &
+LDB_PID=$!
+disown 2>/dev/null || true
+
+# Brief settle
+sleep 1
+
+if kill -0 "$LDB_PID" 2>/dev/null; then
+    echo "  [OK] LDB launched, pid=$LDB_PID"
+else
+    echo "  [!!] LDB did not stay alive — check $LOG_PATH"
+fi
+
 echo ""
 echo "================================================================="
-echo "                          ARMED"
+echo "                    LAUNCHED + ARMED"
 echo "================================================================="
 echo ""
-echo "  Next steps:"
-echo "    1. Launch LockDown Browser manually (Applications, Spotlight,"
-echo "       LDB.app double-click — whatever you normally do)."
-echo "    2. After LDB starts, watch the log to confirm injection:"
+echo "  Watch the injection live:"
+echo "    tail -f $LOG_PATH"
 echo ""
-echo "         tail -f $LOG_PATH"
+echo "  Look for:"
+echo "    [time] LOADED  pid=$LDB_PID  bundleID=com.Respondus.LockDownBrowser"
+echo "           hooked NSWorkspace.runningApplications"
+echo "           (and other hooks)"
 echo ""
-echo "    3. You should see:"
-echo "         [date] LOADED  pid=NNNN  bundleID=com.respondus.lockdownbrowser"
-echo "                → TARGET MATCH, would init overlay here (Phase 2)"
-echo ""
-echo "  When done testing:   ./disarm.sh"
+echo "  When done:  ./disarm.sh"
 echo "================================================================="
 echo ""
