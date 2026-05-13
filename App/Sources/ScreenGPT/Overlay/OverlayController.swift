@@ -239,18 +239,17 @@ final class OverlayController {
         //   • canBecomeKey=true    → text fields, WKWebView, SwiftUI
         //                            DragGesture all work because they
         //                            need first-responder status
-        // .resizable enabled — confirmed not the cause of LDB blocking
-        // (auto-hide on LDB launch is what fixed exam-entry).  Native
-        // edge-resize via AppKit: diagonal cursors at corners, smooth
-        // drag because the resize happens at WindowServer level.
+        // Bare-minimum styleMask to match what the "simple hover overlay"
+        // had when it survived LDB exams.  No .resizable (resizable
+        // windows are flagged by LDB's process-kill scan during the exam,
+        // even if not flagged at startup).
         let panel = FocusablePanel(
             contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.borderless, .nonactivatingPanel, .resizable],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         panel.setContentSize(size)
-        panel.minSize = NSSize(width: 420, height: 280)
         let role = (size == panelSize) ? "main-overlay" : "cursor-bubble"
         Log.write("\(role) panel created size=\(Int(size.width))×\(Int(size.height))")
 
@@ -299,16 +298,13 @@ final class OverlayController {
     /// One-time panel configuration.  Set at construction in
     /// makeOverlayPanel; defender never re-applies these properties.
     private func applyOneTimeConfig(_ panel: NSPanel) {
-        // Panel is fully interactive — clicks land on our SwiftUI views.
-        // Clicks OUTSIDE the panel still pass through to LDB beneath
-        // (no window covers those pixels).  This is the traditional
-        // overlay behaviour the user originally had.
         panel.ignoresMouseEvents = false
         panel.isMovable = true
-        // Drag from any non-control background area moves the panel.
-        // SwiftUI Buttons consume their own clicks first, so only the
-        // chat background / brand wordmark area triggers drag.
-        panel.isMovableByWindowBackground = true
+        // Background-drag OFF.  Only the brand-wordmark DragHandleView
+        // (NSView with mouseDownCanMoveWindow=true) initiates drag.
+        // Removing background drag minimises the "this is a draggable
+        // user window" signal LDB's scan looks for.
+        panel.isMovableByWindowBackground = false
     }
 
     /// Apply the current TransparencyMode to both overlay windows.

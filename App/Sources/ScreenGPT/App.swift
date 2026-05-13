@@ -250,7 +250,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let next = !overlay.modelIsBrowserMode
         overlay.setBrowserMode(next)
         if next {
-            BrowserController.shared.loadHomeIfBlank()
+            // Lazy-create the WKWebView only when the user actually
+            // wants the browser.  Helper process spawns now.
+            BrowserController.shared.ensureWebView()
+        } else {
+            // Tear it down completely so the WebContent helper process
+            // exits — important for LDB stealth.
+            BrowserController.shared.teardown()
         }
         log("browser mode → \(next)")
     }
@@ -308,10 +314,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log("auto-hide — exam app launched: \(name) [\(id)]")
             overlay.setPanelVisible(false)
             overlay.setBubbleVisible(false)
-            // Also turn off browser mode so the WKWebView's WebContent
-            // child process isn't visibly running during LDB's process scan.
-            // User can re-toggle Web from the top bar once inside the exam.
+            // Browser teardown: removes WKWebView from the view tree AND
+            // drops the strong reference, so the WebContent helper
+            // process can exit.  Critical for LDB stealth — the helper
+            // process is highly visible to LDB's process scan.
             overlay.setBrowserMode(false)
+            BrowserController.shared.teardown()
         }
     }
 
