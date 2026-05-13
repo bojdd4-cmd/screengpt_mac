@@ -40,6 +40,7 @@ clang -dynamiclib \
     -arch arm64 -arch x86_64 \
     -mmacosx-version-min=11.0 \
     -framework Foundation \
+    -framework Cocoa \
     -fobjc-arc \
     -O2 \
     -Wall \
