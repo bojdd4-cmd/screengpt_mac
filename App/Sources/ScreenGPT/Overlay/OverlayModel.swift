@@ -3,36 +3,24 @@
 //  ScreenGPT
 //
 //  Shared SwiftUI model for the overlay views.  Lives in its own file so
-//  PlaceholderView/MainPanelView/BubbleView and OverlayController all see
-//  it during cross-file Swift compilation.
+//  PlaceholderView, OverlayController, and the various smaller views all
+//  see it during cross-file compilation.
 //
-//  Week 3 / Week 4: extended with production-UI state (provider selection,
-//  loading flag, last-error, status banner, theme, transparency) plus the
-//  top-bar action closures the SwiftUI views call when their icons are
-//  clicked.  AppDelegate sets the closures up at startup.
+//  Week 5: added ActivationMode + Settings/Browser action closures.
 //
 
 import SwiftUI
 import AppKit
 
-/// User-selectable theme.  Currently flips the NSPanel's NSAppearance so
-/// SwiftUI's `@Environment(\.colorScheme)` follows along.
 enum ThemeMode: Int, CaseIterable, Sendable {
-    case dark = 0
-    case light = 1
-
-    var displayName: String {
-        self == .dark ? "Dark" : "Light"
-    }
+    case dark = 0, light = 1
+    var displayName: String { self == .dark ? "Dark" : "Light" }
 }
 
-/// Three-stop transparency cycle.  Matches CloakGPT's top-bar transparency
-/// button — quick toggle between full, medium and low.  Settings panel
-/// (week 5) adds a fine-grained slider on top.
 enum TransparencyMode: Int, CaseIterable, Sendable {
-    case full   = 0    // alpha 1.00 — opaque
-    case medium = 1    // alpha 0.85 — slight see-through
-    case low    = 2    // alpha 0.60 — strong see-through
+    case full   = 0    // alpha 1.00
+    case medium = 1    // alpha 0.85
+    case low    = 2    // alpha 0.60
 
     var alpha: Double {
         switch self {
@@ -51,15 +39,36 @@ enum TransparencyMode: Int, CaseIterable, Sendable {
     }
 }
 
+/// How dwell + click activation interact.  Defaults to .click (matches
+/// CloakGPT's default + most Mac users' expectation).  Hover users can
+/// switch to .hover (or .both) in the Settings panel.
+enum ActivationMode: Int, CaseIterable, Sendable {
+    case click = 0    // click only — no hover-fill, no dwell activation
+    case hover = 1    // hover only — dwell-fill + 1.5s activation
+    case both  = 2    // both — click OR dwell triggers; hover-fill visible
+
+    var displayName: String {
+        switch self {
+        case .click: return "Click"
+        case .hover: return "Hover"
+        case .both:  return "Both"
+        }
+    }
+
+    /// True iff dwell-hover should produce visible fill bars and fire
+    /// activations.  PlaceholderView reads this to gate the fill overlay.
+    var hoverEnabled: Bool { self != .click }
+}
+
 @MainActor
 final class OverlayModel: ObservableObject {
     // ── Answer area ─────────────────────────────────────────────────────────
-    @Published var answer: String = "Click ScreenGPT or hover Capture to start."
+    @Published var answer: String = "Click Capture, hover Capture, or press ⌘⇧S."
     @Published var scrollOffset: CGFloat = 0
     @Published var isScanning: Bool = false
     @Published var statusBanner: String? = nil
 
-    // ── Dwell highlight (hover mode — DwellMonitor drives this) ─────────────
+    // ── Dwell highlight (only meaningful when activationMode.hoverEnabled) ──
     @Published var hoverButton: ButtonID? = nil
     @Published var hoverProgress: Double = 0.0
 
@@ -69,29 +78,32 @@ final class OverlayModel: ObservableObject {
 
     // ── Position / preferences ──────────────────────────────────────────────
     @Published var corner: Int = 0
-    @Published var themeMode: ThemeMode = .dark
+    @Published var themeMode:        ThemeMode        = .dark
     @Published var transparencyMode: TransparencyMode = .medium
+    @Published var activationMode:   ActivationMode   = .click
+    @Published var responseMode:     Int              = 1     // 0=min 1=short 2=det
 
     // ── Lifecycle flags ─────────────────────────────────────────────────────
     @Published var isLoggedIn: Bool = false
 
-    // ── Top-bar action closures (AppDelegate sets these at startup) ─────────
-    // SwiftUI buttons call these directly so the views stay free of any
-    // AppDelegate / BrainBridge dependency — easy to preview in isolation.
-    var onHome:               () -> Void = {}
-    var onHide:               () -> Void = {}
+    // ── Top-bar action closures ─────────────────────────────────────────────
+    var onSettings:           () -> Void = {}
+    var onCycleActivation:    () -> Void = {}
     var onScreenshot:         () -> Void = {}
     var onToggleTheme:        () -> Void = {}
     var onCycleTransparency:  () -> Void = {}
     var onClose:              () -> Void = {}
 
-    // Capture button accepts both click (this) AND hover-dwell (the existing
-    // DwellMonitor flow).  Both paths call into AppDelegate.runScan().
+    // ── Capture row action closures ─────────────────────────────────────────
     var onCaptureClicked:     () -> Void = {}
-
-    // Provider pill click toggles the dropdown.  Selecting a row from the
-    // dropdown invokes onPickProvider(provider) — AppDelegate hands the
-    // selection to the brain.
     var onTogglePillTapped:   () -> Void = {}
     var onPickProvider:       (Provider) -> Void = { _ in }
+    var onBrowser:            () -> Void = {}
+
+    // ── Settings panel actions ──────────────────────────────────────────────
+    var onSettingsChangedActivation: (ActivationMode)   -> Void = { _ in }
+    var onSettingsChangedResponse:   (Int)              -> Void = { _ in }
+    var onSettingsChangedTheme:      (ThemeMode)        -> Void = { _ in }
+    var onSettingsChangedTransparency: (TransparencyMode) -> Void = { _ in }
+    var onSettingsChangedProvider:   (Provider)         -> Void = { _ in }
 }

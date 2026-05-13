@@ -80,6 +80,8 @@ struct Settings: Equatable, Sendable {
     // ── Week 4: theme + transparency ─────────────────────────────────────
     var themeMode:        Int = 0     // 0 = dark, 1 = light (ThemeMode raw)
     var transparencyMode: Int = 1     // 0 = full, 1 = medium, 2 = low (TransparencyMode raw)
+    // ── Week 5: activation mode ──────────────────────────────────────────
+    var activationMode:   Int = 0     // 0 = click, 1 = hover, 2 = both (ActivationMode raw)
 
     // ── Mapping from brain snapshot ────────────────────────────────────────
 
@@ -100,6 +102,7 @@ struct Settings: Equatable, Sendable {
         if let v = s["dismiss_zone"]   as? Bool   { out.dismissZone   = v }
         if let v = s["theme_mode"]        as? Int { out.themeMode        = v }
         if let v = s["transparency_mode"] as? Int { out.transparencyMode = v }
+        if let v = s["activation_mode"]   as? Int { out.activationMode   = v }
         return out
     }
 }

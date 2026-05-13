@@ -334,6 +334,8 @@ SETTINGS_DEFAULT: Dict[str, Any] = {
     # Week 4 — appearance preferences
     "theme_mode":         0,    # 0=dark 1=light (ThemeMode raw)
     "transparency_mode":  1,    # 0=full 1=medium 2=low (TransparencyMode raw)
+    # Week 5 — interaction prefs
+    "activation_mode":    0,    # 0=click 1=hover 2=both (ActivationMode raw)
 }
 
 

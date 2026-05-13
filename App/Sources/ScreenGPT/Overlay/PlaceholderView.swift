@@ -2,27 +2,25 @@
 //  PlaceholderView.swift
 //  ScreenGPT
 //
-//  Week 4 production overlay views.  File name kept as PlaceholderView.swift
-//  to avoid a rename across SPM + git; the types inside (PlaceholderPanelView,
-//  PlaceholderBubbleView) are the real production UI.
+//  Week 5 production overlay layout.
 //
-//  Top bar layout (6 icons, left → right):
-//      [Brand (drag) ........]  [🏠 Home] [👁 Hide] [📷 Cap] [🌙/☀ Theme] [👻 Trans] [✕ Close]
+//  Top bar (6 monochrome icons, left → right):
+//      [Brand wordmark — drag-handle background]
+//      [⚙ Settings]   [⇄ Mode toggle]   [📷 Quick scan]
+//      [🌙 Theme]     [◐ Transparency]  [✕ Close]
 //
-//  • Brand wordmark on the left is a drag-by-window handle.  Clicking +
-//    dragging it moves the overlay panel anywhere on screen.
-//  • Each icon is a click-driven SwiftUI Button that invokes a closure
-//    on OverlayModel — AppDelegate wires those closures up at startup.
-//  • The Capture button below still supports hover-dwell (DwellMonitor)
-//    AND click — both call the same scan handler.
+//  Capture row (3 elements, left → right):
+//      [Capture (small)]   [AI dropdown]   [🌐 Browser]
+//
+//  Bottom-right corner has a resize grip — drag to resize the panel.
+//
+//  Hover-fill bars on Capture / pill / scroll rails only render when
+//  `model.activationMode.hoverEnabled` is true — click-only users see a
+//  cleaner UI without ghost fill animations.
 //
 
 import SwiftUI
 import AppKit
-
-// =============================================================================
-//  MainPanelView (kept-name PlaceholderPanelView)
-// =============================================================================
 
 struct PlaceholderPanelView: View {
     @ObservedObject var model: OverlayModel
@@ -42,8 +40,20 @@ struct PlaceholderPanelView: View {
             if model.providerDropdownExpanded {
                 providerDropdown
             }
+
+            // Resize grip — bottom-right.  Lives in the ZStack so it stays
+            // anchored even as the answer area resizes.
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    ResizeGrip(tint: secondaryText.opacity(0.5))
+                        .frame(width: 14, height: 14)
+                        .padding(.trailing, 4)
+                        .padding(.bottom, 4)
+                }
+            }
         }
-        .frame(width: ButtonRects.panelW, height: ButtonRects.panelH)
         .ignoresSafeArea()
     }
 
@@ -71,65 +81,49 @@ struct PlaceholderPanelView: View {
             : Color.black.opacity(0.12)
     }
 
-    private var primaryText: Color {
-        colorScheme == .dark ? .white : .black
+    private var primaryText:   Color { colorScheme == .dark ? .white : .black }
+    private var secondaryText: Color { colorScheme == .dark ? .white.opacity(0.65) : .black.opacity(0.60) }
+    private var subtleFill:    Color { colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.05) }
+
+    /// Monochrome icon tint for top bar.  All non-destructive icons share
+    /// this colour so the row blends into the panel at low transparency.
+    private var iconTint: Color {
+        colorScheme == .dark ? Color.white.opacity(0.78) : Color.black.opacity(0.78)
     }
 
-    private var secondaryText: Color {
-        colorScheme == .dark ? .white.opacity(0.65) : .black.opacity(0.60)
-    }
-
-    private var subtleFill: Color {
-        colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.05)
-    }
-
-    // MARK: - Top bar
+    // MARK: - Top bar (monochrome)
 
     private var topBar: some View {
         HStack(spacing: 4) {
-            // Brand wordmark — DRAG HANDLE.  Wrapped in DragHandle which
-            // overrides mouseDownCanMoveWindow so macOS handles the drag
-            // natively (smooth, no SwiftUI gesture conflicts).
-            ZStack(alignment: .leading) {
-                DragHandle()
-                    .allowsHitTesting(true)
-                wordmark
-            }
-            .frame(width: 110, height: 22)
-            .padding(.leading, 12)
+            wordmark
+                .padding(.leading, 12)
 
             Spacer(minLength: 4)
 
-            // 6-icon row, right side
-            topBarIcon(symbol: "house.fill",
-                       tint: .blue,
-                       action: model.onHome,
-                       help: "Home")
+            topBarIcon(symbol: "gearshape.fill",
+                       action: model.onSettings,
+                       help: "Settings")
 
-            topBarIcon(symbol: "eye.slash",
-                       tint: .gray,
-                       action: model.onHide,
-                       help: "Hide overlay")
+            topBarIcon(symbol: activationSymbol,
+                       action: model.onCycleActivation,
+                       help: "Activation: \(model.activationMode.displayName)")
 
             topBarIcon(symbol: "camera.fill",
-                       tint: .green,
-                       action: { model.onScreenshot() },
+                       action: model.onScreenshot,
                        help: "Screenshot & scan")
 
             topBarIcon(symbol: themeSymbol,
-                       tint: themeIconTint,
                        action: model.onToggleTheme,
-                       help: "Theme")
+                       help: "Theme: \(model.themeMode.displayName)")
 
             topBarIcon(symbol: transparencySymbol,
-                       tint: .purple,
                        action: model.onCycleTransparency,
                        help: "Transparency: \(model.transparencyMode.displayName)")
 
             topBarIcon(symbol: "xmark",
-                       tint: .red,
                        action: model.onClose,
-                       help: "Quit ScreenGPT")
+                       help: "Quit",
+                       isDestructive: true)
                 .padding(.trailing, 8)
         }
         .frame(height: 26)
@@ -143,15 +137,20 @@ struct PlaceholderPanelView: View {
                     .foregroundColor(primaryText.opacity(0.92))
             }
         }
-        .allowsHitTesting(false)   // pass through to DragHandle below
+        // No hit-testing so background drag works on this area.
+        .allowsHitTesting(false)
+    }
+
+    private var activationSymbol: String {
+        switch model.activationMode {
+        case .click: return "cursorarrow.click.2"
+        case .hover: return "hand.point.up.left.fill"
+        case .both:  return "arrow.left.and.right.circle.fill"
+        }
     }
 
     private var themeSymbol: String {
         model.themeMode == .dark ? "moon.stars.fill" : "sun.max.fill"
-    }
-
-    private var themeIconTint: Color {
-        model.themeMode == .dark ? .indigo : .orange
     }
 
     private var transparencySymbol: String {
@@ -162,24 +161,26 @@ struct PlaceholderPanelView: View {
         }
     }
 
-    /// A compact click-driven top-bar icon button.  Tint hints colour, but
-    /// the actual fill is subtle — bright icons would be visually noisy in
-    /// a 480-wide panel.
+    /// Compact monochrome top-bar icon.  All non-destructive icons share
+    /// the same tint so the bar blends at low transparency.  The X is the
+    /// only outlier — subtle red for destructive-action affordance.
     private func topBarIcon(symbol: String,
-                            tint: Color,
                             action: @escaping () -> Void,
-                            help: String) -> some View {
-        Button(action: action) {
+                            help: String,
+                            isDestructive: Bool = false) -> some View {
+        let tint = isDestructive ? Color.red.opacity(0.75) : iconTint
+        let fill = isDestructive ? Color.red.opacity(0.10) : subtleFill
+        return Button(action: action) {
             ZStack {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(tint.opacity(0.18))
+                    .fill(fill)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(tint.opacity(0.45), lineWidth: 0.8)
+                            .stroke(tint.opacity(0.45), lineWidth: 0.7)
                     )
                 Image(systemName: symbol)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(primaryText)
+                    .foregroundColor(tint)
             }
             .frame(width: 24, height: 22)
         }
@@ -193,10 +194,12 @@ struct PlaceholderPanelView: View {
         HStack(spacing: 8) {
             captureButton
             providerPill
+            browserButton
         }
         .padding(.horizontal, 12)
     }
 
+    /// Downsized Capture button — was 368 wide, now 120.
     private var captureButton: some View {
         Button(action: { model.onCaptureClicked() }) {
             ZStack(alignment: .leading) {
@@ -206,27 +209,23 @@ struct PlaceholderPanelView: View {
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .stroke(Color.white.opacity(0.12), lineWidth: 1)
                     )
-
-                // Hover fill — still driven by DwellMonitor for users on
-                // hover-mode.  Click users see this fill briefly on press.
-                if model.hoverButton == .capture {
+                if model.activationMode.hoverEnabled, model.hoverButton == .capture {
                     GeometryReader { geo in
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .fill(Color.blue.opacity(0.55))
                             .frame(width: geo.size.width * model.hoverProgress)
                     }
                 }
-
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: model.isScanning ? "hourglass" : "viewfinder")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text(model.isScanning ? "Scanning…" : "Capture")
                         .font(.system(size: 13, weight: .semibold))
+                    Text(model.isScanning ? "Scan…" : "Scan")
+                        .font(.system(size: 12, weight: .semibold))
                 }
                 .foregroundColor(.white)
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 10)
             }
-            .frame(width: ButtonRects.panelW - 112, height: 38)
+            .frame(width: 120, height: 36)
         }
         .buttonStyle(.plain)
         .disabled(model.isScanning)
@@ -236,20 +235,18 @@ struct PlaceholderPanelView: View {
         Button(action: { model.onTogglePillTapped() }) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.purple.opacity(0.30))
+                    .fill(Color.purple.opacity(0.28))
                     .overlay(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .stroke(Color.white.opacity(0.14), lineWidth: 1)
                     )
-
-                if model.hoverButton == .providerPill {
+                if model.activationMode.hoverEnabled, model.hoverButton == .providerPill {
                     GeometryReader { geo in
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .fill(Color.purple.opacity(0.55))
                             .frame(width: geo.size.width * model.hoverProgress)
                     }
                 }
-
                 HStack(spacing: 4) {
                     Text(model.currentProvider.displayName)
                         .font(.system(size: 12, weight: .semibold))
@@ -259,7 +256,31 @@ struct PlaceholderPanelView: View {
                 }
                 .foregroundColor(.white)
             }
-            .frame(width: 80, height: 38)
+            .frame(width: 130, height: 36)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// New Web Browser button — sits right of the AI dropdown.  Opens the
+    /// browser window managed by BrowserController.
+    private var browserButton: some View {
+        Button(action: { model.onBrowser() }) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.teal.opacity(0.28))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                    )
+                HStack(spacing: 4) {
+                    Image(systemName: "globe")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Web")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundColor(.white)
+            }
+            .frame(width: 130, height: 36)
         }
         .buttonStyle(.plain)
     }
@@ -269,8 +290,7 @@ struct PlaceholderPanelView: View {
     private var providerDropdown: some View {
         VStack(spacing: 2) {
             ForEach(Provider.allCases.indices, id: \.self) { idx in
-                let p = Provider.allCases[idx]
-                providerDropdownRow(provider: p)
+                providerDropdownRow(provider: Provider.allCases[idx])
             }
         }
         .padding(4)
@@ -283,8 +303,10 @@ struct PlaceholderPanelView: View {
                 )
                 .shadow(color: .black.opacity(0.50), radius: 10, x: 0, y: 4)
         )
-        .frame(width: 110)
-        .offset(x: ButtonRects.panelW - 124, y: 76)
+        .frame(width: 130)
+        // Position the dropdown right under the AI pill in the capture row.
+        // Pill is at horizontal offset 12 (padding) + 120 (capture) + 8 (spacing) = 140.
+        .offset(x: 140, y: 76)
     }
 
     private func providerDropdownRow(provider: Provider) -> some View {
@@ -326,8 +348,6 @@ struct PlaceholderPanelView: View {
             ZStack(alignment: .topLeading) {
                 Color.clear
                 if let banner = model.statusBanner, model.answer.isEmpty {
-                    // While the answer is empty (i.e. scan in progress) we
-                    // show the status banner in-place, big and clear.
                     VStack {
                         Spacer()
                         HStack(spacing: 8) {
@@ -355,13 +375,17 @@ struct PlaceholderPanelView: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-            // Manual scroll rail — dwell-only (hover up/down arrows)
-            VStack(spacing: 4) {
-                hoverableScrollArrow(id: .scrollUp,   system: "chevron.up")
-                hoverableScrollArrow(id: .scrollDown, system: "chevron.down")
+            // Scroll rail — hover-only (no equivalent click target).  Hidden
+            // when activation mode is click-only since the user can't dwell
+            // to scroll.
+            if model.activationMode.hoverEnabled {
+                VStack(spacing: 4) {
+                    hoverableScrollArrow(id: .scrollUp,   system: "chevron.up")
+                    hoverableScrollArrow(id: .scrollDown, system: "chevron.down")
+                }
+                .padding(.trailing, 6)
+                .padding(.top, 6)
             }
-            .padding(.trailing, 6)
-            .padding(.top, 6)
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 12)
@@ -423,18 +447,65 @@ struct PlaceholderBubbleView: View {
 }
 
 // =============================================================================
-//  DragHandle — NSViewRepresentable that lets macOS handle window drag
-//  natively from a specific subview rather than the whole window background
+//  Resize grip — bottom-right corner drag handle to resize the overlay
 // =============================================================================
 
-/// Wrap as `.overlay { DragHandle() }` or place in a ZStack — anywhere this
-/// view is hit, mouseDown drag moves the parent NSWindow.  Native, smooth,
-/// respects NSWindow.isMovable + isMovableByWindowBackground rules.
-struct DragHandle: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView { _DragNSView() }
-    func updateNSView(_ nsView: NSView, context: Context) {}
-}
+struct ResizeGrip: View {
+    let tint: Color
+    @State private var startFrame: NSRect?
 
-private final class _DragNSView: NSView {
-    override var mouseDownCanMoveWindow: Bool { true }
+    var body: some View {
+        ZStack {
+            // Diagonal hash pattern — three short lines.
+            Canvas { ctx, size in
+                let s = size.width
+                let stroke = StrokeStyle(lineWidth: 1.2, lineCap: .round)
+                for offset in [0.0, 0.35, 0.70] {
+                    var path = Path()
+                    path.move(to:    CGPoint(x: s,        y: s * offset))
+                    path.addLine(to: CGPoint(x: s * offset, y: s))
+                    ctx.stroke(path, with: .color(tint), style: stroke)
+                }
+            }
+            Color.clear   // expand hit area
+        }
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(coordinateSpace: .global)
+                .onChanged { value in
+                    guard let win = currentPanelWindow() else { return }
+                    if startFrame == nil { startFrame = win.frame }
+                    guard let s = startFrame else { return }
+
+                    let newW = max(360, s.width  + value.translation.width)
+                    let newH = max(220, s.height + value.translation.height)
+                    // Keep TOP edge fixed — origin.y moves down as height grows.
+                    let topY = s.origin.y + s.height
+                    let newY = topY - newH
+                    win.setFrame(
+                        NSRect(x: s.origin.x, y: newY, width: newW, height: newH),
+                        display: true
+                    )
+                }
+                .onEnded { _ in startFrame = nil }
+        )
+        .onHover { hovering in
+            if hovering {
+                NSCursor.crosshair.set()
+            } else {
+                NSCursor.arrow.set()
+            }
+        }
+    }
+
+    /// Walk the app's window list to find the overlay panel.  Identified by
+    /// its content-view-controller type (NSHostingController<PlaceholderPanelView>).
+    private func currentPanelWindow() -> NSWindow? {
+        for w in NSApp.windows {
+            if w.contentViewController is NSHostingController<PlaceholderPanelView> {
+                return w
+            }
+        }
+        return nil
+    }
 }

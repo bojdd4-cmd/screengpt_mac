@@ -100,10 +100,23 @@ final class OverlayController {
     /// only become hot when the dropdown is showing.
     var isDropdownExpanded: Bool { model.providerDropdownExpanded }
 
-    /// Read-only accessors for the current theme + transparency.  AppDelegate
-    /// uses these when handling cycle/toggle clicks.
+    /// Read-only accessors for the current theme + transparency + activation.
     var modelThemeMode:        ThemeMode        { model.themeMode }
     var modelTransparencyMode: TransparencyMode { model.transparencyMode }
+    var modelActivationMode:   ActivationMode   { model.activationMode }
+    var modelResponseMode:     Int              { model.responseMode }
+    var modelCurrentProvider:  Provider         { model.currentProvider }
+
+    /// Set the activation mode and propagate to the SwiftUI views.  The
+    /// fill bars on Capture / Provider pill / scroll arrows render only
+    /// when `model.activationMode.hoverEnabled` is true.
+    func setActivationMode(_ mode: ActivationMode) {
+        model.activationMode = mode
+    }
+
+    func setResponseMode(_ raw: Int) {
+        model.responseMode = max(0, min(2, raw))
+    }
 
     func setBubbleVisible(_ visible: Bool) {
         let win = ensureBubbleWindow()
@@ -279,12 +292,12 @@ final class OverlayController {
         // no window covers those pixels.
         panel.ignoresMouseEvents = false
 
-        // We handle drag-to-move via a dedicated drag handle on the brand
-        // wordmark (see PlaceholderView.swift — NSViewRepresentable that
-        // overrides mouseDownCanMoveWindow).  Background-drag is OFF so the
-        // user can't accidentally drag the panel by clicking the answer
-        // text area.
-        panel.isMovableByWindowBackground = false
+        // Week 5: enable drag-from-any-background so the user can grab the
+        // overlay from any non-button area to move it.  SwiftUI Buttons
+        // intercept their own clicks before the drag is initiated, so
+        // clicking icons / capture / pill still acts as expected — only
+        // empty backdrop pixels become drag handles.
+        panel.isMovableByWindowBackground = true
         panel.isMovable = true
 
         // Survive every Space transition LDB might trigger.
@@ -317,11 +330,11 @@ final class OverlayController {
         bubbleWindow?.appearance = appearance
     }
 
-    /// Wire up the top-bar action closures.  Called once from AppDelegate so
-    /// the SwiftUI views don't need to import AppDelegate / BrainBridge.
+    /// Wire up the action closures invoked by SwiftUI buttons.  Called once
+    /// from AppDelegate so views don't need to import AppDelegate.
     struct Actions {
-        var onHome:              () -> Void
-        var onHide:              () -> Void
+        var onSettings:          () -> Void
+        var onCycleActivation:   () -> Void
         var onScreenshot:        () -> Void
         var onToggleTheme:       () -> Void
         var onCycleTransparency: () -> Void
@@ -329,19 +342,35 @@ final class OverlayController {
         var onCaptureClicked:    () -> Void
         var onTogglePillTapped:  () -> Void
         var onPickProvider:      (Provider) -> Void
+        var onBrowser:           () -> Void
+        var onSettingsChangedActivation:    (ActivationMode)   -> Void
+        var onSettingsChangedResponse:      (Int)              -> Void
+        var onSettingsChangedTheme:         (ThemeMode)        -> Void
+        var onSettingsChangedTransparency:  (TransparencyMode) -> Void
+        var onSettingsChangedProvider:      (Provider)         -> Void
     }
 
     func wireActions(_ a: Actions) {
-        model.onHome               = a.onHome
-        model.onHide               = a.onHide
-        model.onScreenshot         = a.onScreenshot
-        model.onToggleTheme        = a.onToggleTheme
-        model.onCycleTransparency  = a.onCycleTransparency
-        model.onClose              = a.onClose
-        model.onCaptureClicked     = a.onCaptureClicked
-        model.onTogglePillTapped   = a.onTogglePillTapped
-        model.onPickProvider       = a.onPickProvider
+        model.onSettings              = a.onSettings
+        model.onCycleActivation       = a.onCycleActivation
+        model.onScreenshot            = a.onScreenshot
+        model.onToggleTheme           = a.onToggleTheme
+        model.onCycleTransparency     = a.onCycleTransparency
+        model.onClose                 = a.onClose
+        model.onCaptureClicked        = a.onCaptureClicked
+        model.onTogglePillTapped      = a.onTogglePillTapped
+        model.onPickProvider          = a.onPickProvider
+        model.onBrowser               = a.onBrowser
+        model.onSettingsChangedActivation   = a.onSettingsChangedActivation
+        model.onSettingsChangedResponse     = a.onSettingsChangedResponse
+        model.onSettingsChangedTheme        = a.onSettingsChangedTheme
+        model.onSettingsChangedTransparency = a.onSettingsChangedTransparency
+        model.onSettingsChangedProvider     = a.onSettingsChangedProvider
     }
+
+    /// Expose the shared OverlayModel so the new SettingsController can
+    /// bind directly to it (segmented controls auto-update the live overlay).
+    var sharedModel: OverlayModel { model }
 
     private func positionInCorner(_ window: NSPanel, corner: Int, size: NSSize) {
         guard let screen = NSScreen.main else { return }

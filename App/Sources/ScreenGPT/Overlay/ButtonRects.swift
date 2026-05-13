@@ -61,23 +61,26 @@ enum ButtonRects {
     /// for Home / Hide / Screenshot / Theme / Transparency / Close.  The
     /// big Capture row and the scroll rails keep hover-dwell because users
     /// like the "hover to scan" affordance from the Windows version.
+    /// Week 5 — new compact capture row.  Layout: [Capture 120] [Pill 130]
+    /// [Browser 130] starting at x=12 with 8 pt gaps.  Browser button is
+    /// click-only (no dwell rect).
     static let allButtons: [(ButtonID, NSRect)] = [
-        // Big Capture button — both click AND hover-dwell trigger a scan.
-        (.capture,       fromTopDown(x: 12,          y: 34,  w: panelW - 112,   h: 38)),
-        // Provider pill — both click (toggle dropdown) AND hover-dwell.
-        (.providerPill,  fromTopDown(x: panelW - 96, y: 34,  w: 80,             h: 38)),
+        (.capture,       fromTopDown(x: 12,  y: 34,  w: 120, h: 36)),
+        (.providerPill,  fromTopDown(x: 140, y: 34,  w: 130, h: 36)),
 
-        // Scroll rails inside the answer area — hover-only (no click target).
-        (.scrollUp,      fromTopDown(x: panelW - 36, y: 168, w: 26,             h: 60)),
-        (.scrollDown,    fromTopDown(x: panelW - 36, y: 250, w: 26,             h: 60)),
+        // Scroll rails inside the answer area — hover-only.
+        (.scrollUp,      fromTopDown(x: panelW - 36, y: 168, w: 26, h: 60)),
+        (.scrollDown,    fromTopDown(x: panelW - 36, y: 250, w: 26, h: 60)),
     ]
 
     /// Provider dropdown options.  Only active when the dropdown is expanded.
+    /// Positions follow the SwiftUI dropdown offset (x=140, y=76 from
+    /// the panel top, with 4 pt internal padding and 28 pt row pitch).
     static let providerOptions: [(ButtonID, NSRect)] = [
-        (.providerOpt0,  fromTopDown(x: panelW - 96, y: 124, w: 80, h: 26)),
-        (.providerOpt1,  fromTopDown(x: panelW - 96, y: 150, w: 80, h: 26)),
-        (.providerOpt2,  fromTopDown(x: panelW - 96, y: 176, w: 80, h: 26)),
-        (.providerOpt3,  fromTopDown(x: panelW - 96, y: 202, w: 80, h: 26)),
+        (.providerOpt0,  fromTopDown(x: 144, y: 80,  w: 122, h: 26)),
+        (.providerOpt1,  fromTopDown(x: 144, y: 108, w: 122, h: 26)),
+        (.providerOpt2,  fromTopDown(x: 144, y: 136, w: 122, h: 26)),
+        (.providerOpt3,  fromTopDown(x: 144, y: 164, w: 122, h: 26)),
     ]
 
     /// The collapsed-state corner tab.  Active when the panel is hidden so

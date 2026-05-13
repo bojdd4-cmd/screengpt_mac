@@ -54,6 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let capture  = CaptureService()
     let login    = LoginController()
     let hotkeys  = HotkeyManager()
+    let browser  = BrowserController()
+    lazy var settingsController: SettingsController = SettingsController(sharedModel: overlay.sharedModel)
     lazy var defender: OverlayDefender = OverlayDefender(controller: overlay)
 
     // ── State ───────────────────────────────────────────────────────────────
@@ -103,12 +105,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // DwellMonitor stays paused until the overlay is shown — keeps
         // CPU at 0 while we're at the login screen.
 
-        // 4b. Wire the top-bar click actions.  These mirror the dwell-mode
-        //     handlers — both activation paths call the same code so user
-        //     can mix-and-match click vs hover without configuration.
+        // 4b. Wire the action closures invoked by the SwiftUI views.  Click
+        //     handlers and the Settings panel both flow through these.
         overlay.wireActions(.init(
-            onHome:              { [weak self] in self?.handleHome() },
-            onHide:              { [weak self] in self?.handleHide() },
+            onSettings:          { [weak self] in self?.settingsController.show() },
+            onCycleActivation:   { [weak self] in self?.cycleActivationMode() },
             onScreenshot:        { [weak self] in Task { await self?.runScan() } },
             onToggleTheme:       { [weak self] in self?.toggleTheme() },
             onCycleTransparency: { [weak self] in self?.cycleTransparency() },
@@ -120,7 +121,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.dwell.setButtons(self?.makeButtons(for: frame) ?? [])
                 }
             },
-            onPickProvider:      { [weak self] p in self?.pickProvider(p) }
+            onPickProvider:      { [weak self] p in self?.pickProvider(p) },
+            onBrowser:           { [weak self] in self?.browser.show() },
+            onSettingsChangedActivation:   { [weak self] m in self?.applyActivationMode(m) },
+            onSettingsChangedResponse:     { [weak self] r in self?.applyResponseMode(r) },
+            onSettingsChangedTheme:        { [weak self] t in self?.applyTheme(t) },
+            onSettingsChangedTransparency: { [weak self] t in self?.applyTransparency(t) },
+            onSettingsChangedProvider:     { [weak self] p in self?.pickProvider(p) }
         ))
 
         // 5. Wire LoginController's submit closure to the brain.
@@ -189,8 +196,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settings.bubbleEnabled {
             overlay.setBubbleVisible(true)
         }
-        dwell.start()
-        dwell.setButtons(makeButtons(for: overlay.panelFrame))
+        // Only start dwell-polling when the current activation mode actually
+        // uses hover.  Click-only users save the 100 Hz cursor poll.
+        if overlay.modelActivationMode.hoverEnabled {
+            dwell.start()
+            dwell.setButtons(makeButtons(for: overlay.panelFrame))
+        } else {
+            dwell.stop()
+        }
     }
 
     /// ⌘⇧S handler.  Behavior depends on app state:
@@ -218,38 +231,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// remembers the choice.
     private func toggleTheme() {
         let next: ThemeMode = (overlay.modelThemeMode == .dark) ? .light : .dark
-        overlay.applyTheme(next)
-        brain.send(["cmd": "set_setting", "key": "theme_mode", "value": next.rawValue])
-        log("theme → \(next.displayName)")
+        applyTheme(next)
     }
 
     /// Cycle Solid → Glass → Ghost → Solid.  Persist via brain.
     private func cycleTransparency() {
         let cur = overlay.modelTransparencyMode
         let next = TransparencyMode(rawValue: (cur.rawValue + 1) % 3) ?? .full
-        overlay.applyTransparency(next)
-        brain.send(["cmd": "set_setting", "key": "transparency_mode", "value": next.rawValue])
-        log("transparency → \(next.displayName) (α=\(next.alpha))")
+        applyTransparency(next)
     }
 
-    /// Home button — placeholder for the embedded web browser.  Next
-    /// iteration spawns a separate NSWindow with WKWebView + tabs + persistent
-    /// session.  For now we set the answer area so the user has feedback.
-    private func handleHome() {
-        log("home pressed (browser not yet built)")
-        overlay.setAnswer("Home / Browser — coming next update.\n\n" +
-                          "This will open a built-in web browser with persistent " +
-                          "tabs (ChatGPT, Claude, Gemini, anything) so you can use " +
-                          "your own AI accounts directly.")
+    /// Cycle Click → Hover → Both → Click.  Used by the top-bar Mode toggle.
+    private func cycleActivationMode() {
+        let cur = overlay.modelActivationMode
+        let next = ActivationMode(rawValue: (cur.rawValue + 1) % 3) ?? .click
+        applyActivationMode(next)
     }
 
-    /// Hide button — hides both windows, stops the dwell poll for CPU savings.
-    /// ⌘⇧S brings everything back.
-    private func handleHide() {
-        log("hide pressed")
-        overlay.setPanelVisible(false)
-        overlay.setBubbleVisible(false)
-        dwell.stop()
+    // ── Apply-and-persist helpers (also called from Settings panel) ────────
+
+    private func applyTheme(_ mode: ThemeMode) {
+        overlay.applyTheme(mode)
+        settings.themeMode = mode.rawValue
+        brain.send(["cmd": "set_setting", "key": "theme_mode", "value": mode.rawValue])
+        log("theme → \(mode.displayName)")
+    }
+
+    private func applyTransparency(_ mode: TransparencyMode) {
+        overlay.applyTransparency(mode)
+        settings.transparencyMode = mode.rawValue
+        brain.send(["cmd": "set_setting", "key": "transparency_mode", "value": mode.rawValue])
+        log("transparency → \(mode.displayName)")
+    }
+
+    private func applyActivationMode(_ mode: ActivationMode) {
+        overlay.setActivationMode(mode)
+        settings.activationMode = mode.rawValue
+        brain.send(["cmd": "set_setting", "key": "activation_mode", "value": mode.rawValue])
+        // When dwell is disabled, stop polling — saves CPU.  When re-enabled,
+        // start it back up if the panel is visible.
+        if mode == .click {
+            dwell.stop()
+        } else if overlay.isPanelVisible {
+            dwell.start()
+            dwell.setButtons(makeButtons(for: overlay.panelFrame))
+        }
+        log("activation → \(mode.displayName)")
+    }
+
+    private func applyResponseMode(_ raw: Int) {
+        let clamped = max(0, min(2, raw))
+        overlay.setResponseMode(clamped)
+        settings.respMode = clamped
+        brain.send(["cmd": "set_setting", "key": "resp_mode", "value": clamped])
+        log("response length → \(clamped)")
     }
 
     @objc private func handleScreenLock() {
@@ -298,16 +333,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .allSettings(let snapshot):
             settings = Settings.fromBrainSnapshot(snapshot)
             overlay.setCurrentProvider(settings.aiProvider)
-            // Apply persisted theme + transparency so the panel boots with
-            // the user's last-used preferences.
+            overlay.setResponseMode(settings.respMode)
+            // Apply persisted appearance + interaction prefs so the panel
+            // boots with the user's last-used preferences.
             if let theme = ThemeMode(rawValue: settings.themeMode) {
                 overlay.applyTheme(theme)
             }
             if let trans = TransparencyMode(rawValue: settings.transparencyMode) {
                 overlay.applyTransparency(trans)
             }
+            if let act = ActivationMode(rawValue: settings.activationMode) {
+                overlay.setActivationMode(act)
+            }
             log("settings loaded: provider=\(settings.aiProvider.rawValue) "
-                + "theme=\(settings.themeMode) trans=\(settings.transparencyMode)")
+                + "theme=\(settings.themeMode) trans=\(settings.transparencyMode) "
+                + "act=\(settings.activationMode) resp=\(settings.respMode)")
 
         case .settingValue(let key, _):
             // Pull the full snapshot back to stay in sync.
