@@ -41,6 +41,7 @@ clang -dynamiclib \
     -mmacosx-version-min=11.0 \
     -framework Foundation \
     -framework Cocoa \
+    -framework CoreGraphics \
     -fobjc-arc \
     -O2 \
     -Wall \

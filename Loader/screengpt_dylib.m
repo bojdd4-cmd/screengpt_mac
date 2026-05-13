@@ -1,30 +1,33 @@
 //
 //  screengpt_dylib.m
-//  ScreenGPT — kill-shield dylib
+//  ScreenGPT — invisibility dylib
 //
-//  Strategy: when injected into LockDown Browser via DYLD_INSERT_LIBRARIES,
-//  we hook the `kill()` syscall.  When LDB tries to SIGKILL our standalone
-//  ColorCalibration/SystemAuditAgent app, our hook intercepts the call,
-//  identifies the target as us, and returns 0 (success) WITHOUT actually
-//  signaling.  LDB thinks it killed us; we keep running.
-//
-//  Mechanism: DYLD_INTERPOSE — Apple's official compile-time symbol
-//  interposition.  Marks a __DATA,__interpose section with (replacement,
-//  replacee) pairs.  dyld processes this when loading our dylib and
-//  swaps the lazy-binding pointers in the host binary so every call to
-//  kill() in LDB actually invokes my_kill().
+//  Strategy (Phase 1.6): when injected into LockDown Browser via
+//  DYLD_INSERT_LIBRARIES, hook the macOS APIs LDB uses to enumerate
+//  windows and running applications.  Filter OUR app out of those
+//  results so LDB never sees us — no "another foreground application
+//  detected" warning, no exam termination, no kill.
 //
 //  Hooks installed:
-//      kill(pid, sig)             — most common
-//      killpg(pgrp, sig)          — process-group variant
-//      __pthread_kill(thread, sig)— pthread variant
+//      CGWindowListCopyWindowInfo / CGWindowListCreate
+//          → strip windows whose owner name matches our app
+//      NSWorkspace.runningApplications (method swizzle)
+//          → filter out NSRunningApplications whose bundleID matches us
+//      NSWorkspace.frontmostApplication (method swizzle)
+//          → if it would return us, lie and return LDB itself
+//      kill(2) / killpg(2)
+//          → kept from Phase 1.5 as belt-and-suspenders
 //
-//  Phase 1.5 deliverable: just kill-shield, no UI inside LDB.  Our
-//  separate ColorCalibration.app keeps showing the overlay; LDB no
-//  longer succeeds in murdering it.
+//  This is the actual CloakGPT pattern as inferred from their behaviour:
+//  the standalone app stays running outside LDB, and the injected dylib
+//  hides it from LDB's enumeration so LDB has no idea we exist.
 //
 
 #import <Foundation/Foundation.h>
+#import <Cocoa/Cocoa.h>
+#import <CoreGraphics/CoreGraphics.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
 #import <unistd.h>
 #import <signal.h>
 #import <stdio.h>
@@ -34,12 +37,6 @@
 #import <string.h>
 #import <time.h>
 
-// DYLD_INTERPOSE — Apple's compile-time symbol interposition macro.
-// Defined in <mach-o/dyld-interposing.h> on newer SDKs, but inlined
-// here for portability.  Places (replacement, original) pairs in a
-// __DATA,__interpose section.  dyld processes this when loading our
-// dylib: it rewrites every lazy-binding pointer to `original` in the
-// host binary so calls land on `replacement` instead.
 #ifndef DYLD_INTERPOSE
 #define DYLD_INTERPOSE(_replacement, _replacee)                                  \
    __attribute__((used))                                                          \
@@ -73,35 +70,19 @@ static void sgpt_logf(const char *fmt, ...) {
 }
 
 // =============================================================================
-//  Process-identity helpers
+//  Match heuristics — what counts as "us"
 // =============================================================================
 
-/// Resolve a PID to its full executable path.  Returns true on success.
-static bool resolve_pid_path(pid_t pid, char *out_buf, size_t buf_size) {
-    if (!out_buf || buf_size == 0) return false;
-    out_buf[0] = '\0';
-    int rc = proc_pidpath(pid, out_buf, (uint32_t)buf_size);
-    return rc > 0;
-}
-
-/// Decide whether the given PID is one of "our" processes that we
-/// want to shield from being killed.  Match heuristics:
-///
-///   • Path contains "ColorCalibration"   (default install binary name)
-///   • Path contains "SystemAuditAgent"   (CloakGPT-style bundle name)
-///   • Path contains "screengpt"          (any rebuild)
-///   • Path contains "/brain/helper"      (Python brain subprocess)
-///
-/// Case-insensitive.  If any token matches, we shield.
-static bool pid_is_ours(pid_t pid) {
-    char path[PROC_PIDPATHINFO_MAXSIZE];
-    if (!resolve_pid_path(pid, path, sizeof(path))) return false;
-
-    // Lowercase compare without modifying the original buffer.
-    char lower[PROC_PIDPATHINFO_MAXSIZE];
+/// Case-insensitive substring match against a set of tokens that
+/// identify our app and helpers.  Used by both the C-level kill hooks
+/// (via path) and the Cocoa-level swizzles (via bundle ID / name).
+static bool string_is_ours(const char *s) {
+    if (!s || !*s) return false;
+    // Lowercase compare without modifying caller's buffer.
+    char lower[1024];
     size_t i = 0;
-    for (; i < sizeof(lower) - 1 && path[i] != '\0'; i++) {
-        char c = path[i];
+    for (; i < sizeof(lower) - 1 && s[i] != '\0'; i++) {
+        char c = s[i];
         lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
     }
     lower[i] = '\0';
@@ -111,85 +92,219 @@ static bool pid_is_ours(pid_t pid) {
         "systemauditagent",
         "screengpt",
         "/brain/helper",
-        NULL
+        NULL,
     };
-    for (int n = 0; needles[n] != NULL; n++) {
-        if (strstr(lower, needles[n]) != NULL) return true;
+    for (int n = 0; needles[n]; n++) {
+        if (strstr(lower, needles[n])) return true;
     }
     return false;
 }
 
-/// Return the host process's own resolved path (one-time cache after
-/// first call).  Used for logging context.
-static const char *host_path(void) {
-    static char cached[PROC_PIDPATHINFO_MAXSIZE] = {0};
-    if (cached[0] == '\0') {
-        if (!resolve_pid_path(getpid(), cached, sizeof(cached))) {
-            strncpy(cached, "(unknown)", sizeof(cached));
-        }
-    }
-    return cached;
+static bool pid_is_ours(pid_t pid) {
+    char path[PROC_PIDPATHINFO_MAXSIZE];
+    if (proc_pidpath(pid, path, sizeof(path)) <= 0) return false;
+    return string_is_ours(path);
+}
+
+static bool nsstring_is_ours(NSString *s) {
+    if (!s) return false;
+    const char *cs = [s UTF8String];
+    return string_is_ours(cs);
 }
 
 // =============================================================================
-//  Hooked kill functions
+//  Hook: kill / killpg  (Phase 1.5 — kept as belt-and-suspenders)
 // =============================================================================
 
-/// my_kill — replacement for kill(2).  When the target PID belongs to
-/// one of our processes AND the signal is fatal (SIGTERM, SIGKILL),
-/// we return success without actually delivering.  Non-fatal signals
-/// (SIGCONT, SIGUSR1, etc.) are passed through.
 static int my_kill(pid_t pid, int sig) {
-    if (pid > 0 && pid_is_ours(pid)) {
-        // Log only when the host is trying to terminate us.  Skip
-        // log spam for SIGCONT / SIGCHLD that we'd let through anyway.
-        if (sig == SIGKILL || sig == SIGTERM || sig == SIGQUIT || sig == SIGINT) {
-            char victim_path[PROC_PIDPATHINFO_MAXSIZE];
-            resolve_pid_path(pid, victim_path, sizeof(victim_path));
-            sgpt_logf("[%ld] INTERCEPTED kill(pid=%d, sig=%d) from host=%s victim=%s — returning 0",
-                      (long)time(NULL), pid, sig, host_path(), victim_path);
-            return 0;  // lie about success — victim keeps running
-        }
+    if (pid > 0 && pid_is_ours(pid) &&
+        (sig == SIGKILL || sig == SIGTERM || sig == SIGQUIT || sig == SIGINT)) {
+        sgpt_logf("[%ld] INTERCEPTED kill(pid=%d, sig=%d) — returning 0",
+                  (long)time(NULL), pid, sig);
+        return 0;
     }
     return kill(pid, sig);
 }
 DYLD_INTERPOSE(my_kill, kill);
 
-/// my_killpg — replacement for killpg(2).  Process-group kills are
-/// rarer but LDB might use them.  Same logic: if any process in the
-/// group is ours, refuse.
-///
-/// We don't enumerate the group — we just always allow killpg, EXCEPT
-/// when the group equals our PID (process group leader case).
 static int my_killpg(int pgrp, int sig) {
-    // pgrp can equal a PID when the process is its own group leader.
-    if (pgrp > 0 && pid_is_ours((pid_t)pgrp)) {
-        if (sig == SIGKILL || sig == SIGTERM || sig == SIGQUIT || sig == SIGINT) {
-            sgpt_logf("[%ld] INTERCEPTED killpg(pgrp=%d, sig=%d) — returning 0",
-                      (long)time(NULL), pgrp, sig);
-            return 0;
-        }
+    if (pgrp > 0 && pid_is_ours((pid_t)pgrp) &&
+        (sig == SIGKILL || sig == SIGTERM || sig == SIGQUIT || sig == SIGINT)) {
+        sgpt_logf("[%ld] INTERCEPTED killpg(pgrp=%d, sig=%d) — returning 0",
+                  (long)time(NULL), pgrp, sig);
+        return 0;
     }
     return killpg(pgrp, sig);
 }
 DYLD_INTERPOSE(my_killpg, killpg);
 
 // =============================================================================
-//  Constructor — log injection + announce hooks
+//  Hook: CGWindowListCopyWindowInfo  (THE BIG ONE for foreground detection)
+// =============================================================================
+//
+//  CGWindowListCopyWindowInfo returns a CFArray of CFDictionaries, one
+//  per on-screen window.  Each dict has kCGWindowOwnerName,
+//  kCGWindowOwnerPID, kCGWindowName, etc.  LDB almost certainly calls
+//  this to detect "other apps with windows on screen" → triggers the
+//  warning.  Our hook strips entries whose owner matches us.
+// =============================================================================
+
+static CFArrayRef my_CGWindowListCopyWindowInfo(CGWindowListOption option,
+                                                 CGWindowID relativeToWindow) {
+    CFArrayRef raw = CGWindowListCopyWindowInfo(option, relativeToWindow);
+    if (!raw) return NULL;
+
+    CFIndex count = CFArrayGetCount(raw);
+    CFMutableArrayRef filtered = CFArrayCreateMutable(kCFAllocatorDefault,
+                                                      count,
+                                                      &kCFTypeArrayCallBacks);
+    int hidden = 0;
+    for (CFIndex i = 0; i < count; i++) {
+        CFDictionaryRef win = (CFDictionaryRef)CFArrayGetValueAtIndex(raw, i);
+        BOOL drop = NO;
+
+        // Check the window's owning process info.
+        CFStringRef ownerName = (CFStringRef)CFDictionaryGetValue(win, kCGWindowOwnerName);
+        if (ownerName) {
+            char ownerBuf[256] = {0};
+            CFStringGetCString(ownerName, ownerBuf, sizeof(ownerBuf), kCFStringEncodingUTF8);
+            if (string_is_ours(ownerBuf)) drop = YES;
+        }
+
+        // Also check by PID → executable path (catches cases where
+        // owner name is generic like "helper").
+        if (!drop) {
+            CFNumberRef ownerPIDRef = (CFNumberRef)CFDictionaryGetValue(win, kCGWindowOwnerPID);
+            if (ownerPIDRef) {
+                int pid = 0;
+                CFNumberGetValue(ownerPIDRef, kCFNumberIntType, &pid);
+                if (pid > 0 && pid_is_ours((pid_t)pid)) drop = YES;
+            }
+        }
+
+        if (drop) {
+            hidden++;
+        } else {
+            CFArrayAppendValue(filtered, win);
+        }
+    }
+    if (hidden > 0) {
+        sgpt_logf("[%ld] HID %d window(s) from CGWindowListCopyWindowInfo (returned %ld of %ld)",
+                  (long)time(NULL), hidden, count - hidden, count);
+    }
+    CFRelease(raw);
+    return filtered;
+}
+DYLD_INTERPOSE(my_CGWindowListCopyWindowInfo, CGWindowListCopyWindowInfo);
+
+// =============================================================================
+//  Hook: NSWorkspace.runningApplications  + .frontmostApplication
+//        (Cocoa-level foreground detection — method swizzle)
+// =============================================================================
+
+static NSArray<NSRunningApplication *> *(*orig_runningApplications)(id, SEL) = NULL;
+static NSRunningApplication           *(*orig_frontmostApplication)(id, SEL) = NULL;
+static NSRunningApplication           *(*orig_menuBarOwningApplication)(id, SEL) = NULL;
+
+static NSArray<NSRunningApplication *> *swz_runningApplications(id self, SEL _cmd) {
+    NSArray<NSRunningApplication *> *raw = orig_runningApplications(self, _cmd);
+    NSMutableArray<NSRunningApplication *> *filtered = [NSMutableArray array];
+    int hidden = 0;
+    for (NSRunningApplication *app in raw) {
+        if (nsstring_is_ours(app.bundleIdentifier) ||
+            nsstring_is_ours(app.localizedName)    ||
+            nsstring_is_ours(app.executableURL.path)) {
+            hidden++;
+            continue;
+        }
+        [filtered addObject:app];
+    }
+    if (hidden > 0) {
+        sgpt_logf("[%ld] HID %d app(s) from NSWorkspace.runningApplications",
+                  (long)time(NULL), hidden);
+    }
+    return filtered;
+}
+
+static NSRunningApplication *swz_frontmostApplication(id self, SEL _cmd) {
+    NSRunningApplication *app = orig_frontmostApplication(self, _cmd);
+    if (app && (nsstring_is_ours(app.bundleIdentifier) ||
+                nsstring_is_ours(app.localizedName))) {
+        sgpt_logf("[%ld] LIED about frontmostApplication (was %s) — returning current process",
+                  (long)time(NULL),
+                  [(app.bundleIdentifier ?: @"?") UTF8String]);
+        // Return the calling process itself (LDB) so LDB thinks it's
+        // still frontmost.
+        return [NSRunningApplication currentApplication];
+    }
+    return app;
+}
+
+static NSRunningApplication *swz_menuBarOwningApplication(id self, SEL _cmd) {
+    NSRunningApplication *app = orig_menuBarOwningApplication(self, _cmd);
+    if (app && (nsstring_is_ours(app.bundleIdentifier) ||
+                nsstring_is_ours(app.localizedName))) {
+        return [NSRunningApplication currentApplication];
+    }
+    return app;
+}
+
+/// Install method swizzles on NSWorkspace instance methods.  Called
+/// from the constructor.
+static void install_workspace_hooks(void) {
+    Class cls = NSClassFromString(@"NSWorkspace");
+    if (!cls) return;
+
+    SEL selRunning  = @selector(runningApplications);
+    SEL selFront    = @selector(frontmostApplication);
+    SEL selMenuBar  = @selector(menuBarOwningApplication);
+
+    Method mRunning = class_getInstanceMethod(cls, selRunning);
+    Method mFront   = class_getInstanceMethod(cls, selFront);
+    Method mMenuBar = class_getInstanceMethod(cls, selMenuBar);
+
+    if (mRunning) {
+        orig_runningApplications = (void *)method_getImplementation(mRunning);
+        method_setImplementation(mRunning, (IMP)swz_runningApplications);
+        sgpt_log("           hooked NSWorkspace.runningApplications");
+    }
+    if (mFront) {
+        orig_frontmostApplication = (void *)method_getImplementation(mFront);
+        method_setImplementation(mFront, (IMP)swz_frontmostApplication);
+        sgpt_log("           hooked NSWorkspace.frontmostApplication");
+    }
+    if (mMenuBar) {
+        orig_menuBarOwningApplication = (void *)method_getImplementation(mMenuBar);
+        method_setImplementation(mMenuBar, (IMP)swz_menuBarOwningApplication);
+        sgpt_log("           hooked NSWorkspace.menuBarOwningApplication");
+    }
+}
+
+// =============================================================================
+//  Constructor — log injection + install Cocoa hooks
 // =============================================================================
 
 __attribute__((constructor))
-static void screengpt_shield_load(void) {
+static void screengpt_dylib_load(void) {
     @autoreleasepool {
         NSBundle *bundle = [NSBundle mainBundle];
         NSString *bundleID = [bundle bundleIdentifier] ?: @"(none)";
-        const char *target = getenv("SGPT_TARGET");
+        char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+        proc_pidpath(getpid(), path, sizeof(path));
 
-        sgpt_logf("[%ld] LOADED  pid=%d  bundleID=%s  exe=%s  SGPT_TARGET=%s  → kill-shield active",
+        sgpt_logf("[%ld] LOADED  pid=%d  bundleID=%s  exe=%s  → DYLD interposes installed",
                   (long)time(NULL),
                   getpid(),
                   [bundleID UTF8String],
-                  host_path(),
-                  target ? target : "(unset)");
+                  path);
+
+        // Only the Cocoa swizzles need explicit installation; the C-level
+        // hooks (kill, killpg, CGWindowListCopyWindowInfo) are wired up
+        // automatically via DYLD_INTERPOSE at load time.  Install Cocoa
+        // hooks on the main queue so any NSObject runtime initialisation
+        // is finished.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            install_workspace_hooks();
+        });
     }
 }
