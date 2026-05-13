@@ -183,10 +183,7 @@ if [ "$SKIP_DEPLOY" = true ]; then
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>EnvironmentVariables</key>
@@ -366,10 +363,7 @@ cat > "$LAUNCH_AGENT_FILE" <<PLIST
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>EnvironmentVariables</key>
