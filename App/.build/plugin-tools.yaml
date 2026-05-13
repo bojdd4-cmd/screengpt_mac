@@ -1,0 +1,81 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "PackageStructure": ["<PackageStructure>"]
+  "ScreenGPT-arm64-apple-macosx-debug.exe": ["<ScreenGPT-arm64-apple-macosx-debug.exe>"]
+  "ScreenGPT-arm64-apple-macosx-debug.module": ["<ScreenGPT-arm64-apple-macosx-debug.module>"]
+  "main": ["<ScreenGPT-arm64-apple-macosx-debug.exe>","<ScreenGPT-arm64-apple-macosx-debug.module>"]
+  "test": ["<ScreenGPT-arm64-apple-macosx-debug.exe>","<ScreenGPT-arm64-apple-macosx-debug.module>"]
+default: "main"
+nodes:
+  "/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT":
+    is-mutated: true
+commands:
+  "/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT-entitlement.plist":
+    tool: write-auxiliary-file
+    inputs: ["<entitlement-plist>","<com.apple.security.get-task-allow>"]
+    outputs: ["/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT-entitlement.plist"]
+    description: "Write auxiliary file /Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT-entitlement.plist"
+
+  "/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/App.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/BrainBridge.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/BrainEvent.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Models/Provider.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Models/Settings.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Models/Usage.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Overlay/ButtonRects.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Overlay/CaptureService.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Overlay/DwellMonitor.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Overlay/OverlayController.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Overlay/PlaceholderView.swift"]
+    outputs: ["/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/sources"]
+    description: "Write auxiliary file /Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/sources"
+
+  "/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/App.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/BrainBridge.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/BrainEvent.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/ButtonRects.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/CaptureService.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/DwellMonitor.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/OverlayController.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/PlaceholderView.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/Provider.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/Settings.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/Usage.swift.o"]
+    outputs: ["/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.product/Objects.LinkFileList"
+
+  "/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Library/Developer/CommandLineTools/usr/bin/swiftc"]
+    outputs: ["/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"
+
+  "<ScreenGPT-arm64-apple-macosx-debug.exe>":
+    tool: phony
+    inputs: ["<ScreenGPT-arm64-apple-macosx-debug.exe-CodeSigning>"]
+    outputs: ["<ScreenGPT-arm64-apple-macosx-debug.exe>"]
+
+  "<ScreenGPT-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/App.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/BrainBridge.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/BrainEvent.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/Provider.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/Settings.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/Usage.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/ButtonRects.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/CaptureService.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/DwellMonitor.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/OverlayController.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/PlaceholderView.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/Modules/ScreenGPT.swiftmodule"]
+    outputs: ["<ScreenGPT-arm64-apple-macosx-debug.module>"]
+
+  "C.ScreenGPT-arm64-apple-macosx-debug.exe":
+    tool: shell
+    inputs: ["/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/App.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/BrainBridge.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/BrainEvent.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/ButtonRects.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/CaptureService.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/DwellMonitor.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/OverlayController.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/PlaceholderView.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/Provider.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/Settings.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/Usage.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.product/Objects.LinkFileList"]
+    outputs: ["/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT"]
+    description: "Linking ./.build/arm64-apple-macosx/debug/ScreenGPT"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-L","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug","-o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT","-module-name","ScreenGPT","-Xlinker","-no_warn_duplicate_libraries","-emit-executable","-Xlinker","-alias","-Xlinker","_ScreenGPT_main","-Xlinker","_main","-Xlinker","-rpath","-Xlinker","@loader_path","@/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.product/Objects.LinkFileList","-Xlinker","-rpath","-Xlinker","/Library/Developer/CommandLineTools/usr/lib/swift-6.2/macosx","-target","arm64-apple-macosx14.0","-Xlinker","-add_ast_path","-Xlinker","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/Modules/ScreenGPT.swiftmodule","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g"]
+
+  "C.ScreenGPT-arm64-apple-macosx-debug.exe-entitlements":
+    tool: shell
+    inputs: ["/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT-entitlement.plist"]
+    outputs: ["<ScreenGPT-arm64-apple-macosx-debug.exe-CodeSigning>"]
+    description: "Applying debug entitlements to ./.build/arm64-apple-macosx/debug/ScreenGPT"
+    args: ["codesign","--force","--sign","-","--entitlements","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT-entitlement.plist","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT"]
+
+  "C.ScreenGPT-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/App.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/BrainBridge.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/BrainEvent.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Models/Provider.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Models/Settings.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Models/Usage.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Overlay/ButtonRects.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Overlay/CaptureService.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Overlay/DwellMonitor.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Overlay/OverlayController.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/Overlay/PlaceholderView.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/sources"]
+    outputs: ["/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/App.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/BrainBridge.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/BrainEvent.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/Provider.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/Settings.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/Usage.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/ButtonRects.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/CaptureService.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/DwellMonitor.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/OverlayController.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/PlaceholderView.swift.o","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/Modules/ScreenGPT.swiftmodule"]
+    description: "Compiling Swift Module 'ScreenGPT' (11 sources)"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-module-name","ScreenGPT","-emit-dependencies","-emit-module","-emit-module-path","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/Modules/ScreenGPT.swiftmodule","-output-file-map","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/output-file-map.json","-incremental","-c","@/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ScreenGPT.build/sources","-I","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx14.0","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j15","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-Xfrontend","-entry-point-function-name","-Xfrontend","ScreenGPT_main","-color-diagnostics","-swift-version","5","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g","-Xcc","-isysroot","-Xcc","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-Xcc","-fPIC","-Xcc","-g","-package-name","app"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Sources/ScreenGPT/","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Package.swift","/Users/bodavis/Downloads/screengpt_mac/screengpt_mac/App/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+
