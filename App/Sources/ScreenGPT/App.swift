@@ -37,7 +37,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let capture  = CaptureService()
     let login    = LoginController()
     let hotkeys  = HotkeyManager()
-    let zones    = InteractionZoneTracker()
     lazy var settingsController: SettingsController = SettingsController(sharedModel: overlay.sharedModel)
     lazy var defender: OverlayDefender = OverlayDefender(controller: overlay)
 
@@ -77,19 +76,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         defender.start()
         log("OverlayDefender started.")
-
-        // ── Interaction zone tracker (selective click-through) ──────────────
-        // The panel is click-through by default; this 50Hz poll flips
-        // `ignoresMouseEvents` to false ONLY when the cursor is over one of
-        // our interactive zones (top bar, capture row, manual input,
-        // resize grip, browser area).  Result: clicks outside our chrome
-        // pass through to LDB beneath, but our controls still work.
-        zones.getZones = { [weak self] in
-            self?.overlay.interactionZones() ?? []
-        }
-        zones.setIgnoresMouseEvents = { [weak self] ignores in
-            self?.overlay.setIgnoresMouseEvents(ignores)
-        }
 
         // ── SwiftUI click closures ──────────────────────────────────────────
         overlay.wireActions(.init(
@@ -175,14 +161,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settings.bubbleEnabled {
             overlay.setBubbleVisible(true)
         }
-        zones.start()
     }
 
     private func handleHide() {
         log("Hide button clicked")
         overlay.setPanelVisible(false)
         overlay.setBubbleVisible(false)
-        zones.stop()
     }
 
     private func handleToggleHotkey() {
@@ -290,7 +274,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("screen locked / power off — hiding overlay")
         overlay.setPanelVisible(false)
         overlay.setBubbleVisible(false)
-        zones.stop()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

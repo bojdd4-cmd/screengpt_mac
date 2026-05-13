@@ -46,14 +46,6 @@ struct PlaceholderPanelView: View {
             if model.providerDropdownExpanded {
                 providerDropdown
             }
-
-            VStack {
-                Spacer()
-                HStack {
-                    Spacer()
-                    ResizeGrip(tint: secondaryText.opacity(0.6))
-                }
-            }
         }
         .ignoresSafeArea()
     }
@@ -533,6 +525,13 @@ struct PlaceholderPanelView: View {
             }
             .buttonStyle(.plain)
             .disabled(model.manualInput.trimmingCharacters(in: .whitespaces).isEmpty)
+
+            // Resize grip sits at the far right of the input bar, beside
+            // the send button so they don't fight for the bottom-right
+            // corner.  Same vertical level as the bar, so it's clearly
+            // associated with "the bottom of the panel" without overlapping
+            // the send arrow.
+            ResizeGrip(tint: secondaryText.opacity(0.6))
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 6)
@@ -627,25 +626,25 @@ struct ResizeGrip: View {
 
     var body: some View {
         ZStack {
-            // Visual chip in the corner
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(hovering ? Color.blue.opacity(0.25) : Color.clear)
-                .frame(width: 36, height: 36)
+            // Subtle hover backdrop
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(hovering ? Color.blue.opacity(0.22) : Color.clear)
+                .frame(width: 26, height: 26)
             Canvas { ctx, size in
                 let s = size.width
-                let stroke = StrokeStyle(lineWidth: 1.8, lineCap: .round)
-                for offset in [0.15, 0.45, 0.75] {
+                let stroke = StrokeStyle(lineWidth: 1.6, lineCap: .round)
+                for offset in [0.20, 0.55] {
                     var path = Path()
-                    path.move(to:    CGPoint(x: s - 2,        y: s * offset + 4))
-                    path.addLine(to: CGPoint(x: s * offset + 4, y: s - 2))
+                    path.move(to:    CGPoint(x: s - 2,        y: s * offset + 3))
+                    path.addLine(to: CGPoint(x: s * offset + 3, y: s - 2))
                     ctx.stroke(path, with: .color(tint), style: stroke)
                 }
             }
-            .frame(width: 28, height: 28)
+            .frame(width: 20, height: 20)
         }
-        // Generous 60×60 hit area so the user doesn't have to pixel-hunt
-        // the bottom-right corner.
-        .frame(width: 60, height: 60)
+        // 30×30 hit area — compact enough to sit beside the send button
+        // without overlapping, big enough for a comfortable grab.
+        .frame(width: 30, height: 30)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 1, coordinateSpace: .global)

@@ -200,8 +200,8 @@ final class OverlayController {
 
     // MARK: - Internals
 
-    /// 720×680 — chat history gets ~525 px of vertical room.
-    private let panelSize  = NSSize(width: 720, height: 680)
+    /// 900×760 — comfortable workspace: ~600 px chat area.
+    private let panelSize  = NSSize(width: 900, height: 760)
     private let bubbleSize = NSSize(width: 420, height: 320)
 
     private func ensurePanelWindow() -> NSPanel {
@@ -288,17 +288,16 @@ final class OverlayController {
     /// One-time panel configuration.  Set at construction in
     /// makeOverlayPanel; defender never re-applies these properties.
     private func applyOneTimeConfig(_ panel: NSPanel) {
-        // Boot in click-through.  InteractionZoneTracker takes ownership
-        // of this property from here on, flipping it 50× per second based
-        // on cursor position.
-        panel.ignoresMouseEvents = true
+        // Panel is fully interactive — clicks land on our SwiftUI views.
+        // Clicks OUTSIDE the panel still pass through to LDB beneath
+        // (no window covers those pixels).  This is the traditional
+        // overlay behaviour the user originally had.
+        panel.ignoresMouseEvents = false
         panel.isMovable = true
-        // Background-drag is off — the InteractionZoneTracker makes the
-        // top bar (incl. brand area) interactive, and the brand text has
-        // a drag handle in the SwiftUI view tree.  Allowing
-        // background-drag at the same time creates conflicts with the
-        // SwiftUI ScrollView in the chat history.
-        panel.isMovableByWindowBackground = false
+        // Drag from any non-control background area moves the panel.
+        // SwiftUI Buttons consume their own clicks first, so only the
+        // chat background / brand wordmark area triggers drag.
+        panel.isMovableByWindowBackground = true
     }
 
     /// Apply the current TransparencyMode to both overlay windows.
