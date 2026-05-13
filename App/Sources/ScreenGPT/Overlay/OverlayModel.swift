@@ -2,11 +2,10 @@
 //  OverlayModel.swift
 //  ScreenGPT
 //
-//  Shared SwiftUI model for the overlay views.  Lives in its own file so
-//  PlaceholderView, OverlayController, and the various smaller views all
-//  see it during cross-file compilation.
+//  Shared SwiftUI model for the overlay views.  Holds all the live UI
+//  state plus the action closures invoked by the SwiftUI buttons.
 //
-//  Week 5: added ActivationMode + Settings/Browser action closures.
+//  Week 5: added chat-history + browser-mode + manual-ask flow.
 //
 
 import SwiftUI
@@ -18,55 +17,55 @@ enum ThemeMode: Int, CaseIterable, Sendable {
 }
 
 enum TransparencyMode: Int, CaseIterable, Sendable {
-    case full   = 0    // alpha 1.00
-    case medium = 1    // alpha 0.85
-    case low    = 2    // alpha 0.60
-
-    var alpha: Double {
-        switch self {
-        case .full:   return 1.00
-        case .medium: return 0.85
-        case .low:    return 0.60
-        }
-    }
-
-    var displayName: String {
-        switch self {
-        case .full:   return "Solid"
-        case .medium: return "Glass"
-        case .low:    return "Ghost"
-        }
-    }
+    case full   = 0    // α 1.00
+    case medium = 1    // α 0.85
+    case low    = 2    // α 0.60
+    var alpha: Double { [1.00, 0.85, 0.60][rawValue] }
+    var displayName: String { ["Solid", "Glass", "Ghost"][rawValue] }
 }
 
-/// How dwell + click activation interact.  Defaults to .click (matches
-/// CloakGPT's default + most Mac users' expectation).  Hover users can
-/// switch to .hover (or .both) in the Settings panel.
 enum ActivationMode: Int, CaseIterable, Sendable {
-    case click = 0    // click only — no hover-fill, no dwell activation
-    case hover = 1    // hover only — dwell-fill + 1.5s activation
-    case both  = 2    // both — click OR dwell triggers; hover-fill visible
+    case click = 0
+    case hover = 1
+    case both  = 2
 
-    var displayName: String {
-        switch self {
-        case .click: return "Click"
-        case .hover: return "Hover"
-        case .both:  return "Both"
-        }
-    }
-
-    /// True iff dwell-hover should produce visible fill bars and fire
-    /// activations.  PlaceholderView reads this to gate the fill overlay.
+    var displayName: String { ["Click", "Hover", "Both"][rawValue] }
     var hoverEnabled: Bool { self != .click }
+}
+
+/// A single turn in the per-session chat log.  Resets on provider change
+/// and on app close (not persisted to disk per user spec).
+struct ChatMessage: Identifiable, Sendable {
+    let id = UUID()
+    enum Role: Sendable { case user, assistant, system }
+    let role: Role
+    let text: String
+    let hasImage: Bool       // true when the user attached / captured a screenshot
+    let timestamp: Date
+
+    static func user(_ text: String, hasImage: Bool = false) -> ChatMessage {
+        .init(role: .user, text: text, hasImage: hasImage, timestamp: Date())
+    }
+    static func assistant(_ text: String) -> ChatMessage {
+        .init(role: .assistant, text: text, hasImage: false, timestamp: Date())
+    }
+    static func system(_ text: String) -> ChatMessage {
+        .init(role: .system, text: text, hasImage: false, timestamp: Date())
+    }
 }
 
 @MainActor
 final class OverlayModel: ObservableObject {
-    // ── Answer area ─────────────────────────────────────────────────────────
-    @Published var answer: String = "Click Capture, hover Capture, or press ⌘⇧S."
-    @Published var scrollOffset: CGFloat = 0
+    // ── Per-session chat history ────────────────────────────────────────────
+    @Published var chat: [ChatMessage] = []
+    @Published var manualInput: String = ""
+    @Published var attachedImageThumb: NSImage? = nil   // visible image-attached pill
+    @Published var attachedImageB64: String? = nil      // sent with next manual ask
     @Published var isScanning: Bool = false
     @Published var statusBanner: String? = nil
+
+    // ── Browser toggle (embedded WKWebView in answer area) ──────────────────
+    @Published var isBrowserMode: Bool = false
 
     // ── Dwell highlight (only meaningful when activationMode.hoverEnabled) ──
     @Published var hoverButton: ButtonID? = nil
@@ -80,30 +79,31 @@ final class OverlayModel: ObservableObject {
     @Published var corner: Int = 0
     @Published var themeMode:        ThemeMode        = .dark
     @Published var transparencyMode: TransparencyMode = .medium
-    @Published var activationMode:   ActivationMode   = .click
-    @Published var responseMode:     Int              = 1     // 0=min 1=short 2=det
+    @Published var activationMode:   ActivationMode   = .both     // default = both
+    @Published var responseMode:     Int              = 1
+    @Published var contextOn:        Bool             = false
 
     // ── Lifecycle flags ─────────────────────────────────────────────────────
     @Published var isLoggedIn: Bool = false
 
-    // ── Top-bar action closures ─────────────────────────────────────────────
+    // ── Action closures ─────────────────────────────────────────────────────
     var onSettings:           () -> Void = {}
     var onCycleActivation:    () -> Void = {}
     var onScreenshot:         () -> Void = {}
+    var onToggleContext:      () -> Void = {}
     var onToggleTheme:        () -> Void = {}
     var onCycleTransparency:  () -> Void = {}
     var onClose:              () -> Void = {}
-
-    // ── Capture row action closures ─────────────────────────────────────────
     var onCaptureClicked:     () -> Void = {}
     var onTogglePillTapped:   () -> Void = {}
     var onPickProvider:       (Provider) -> Void = { _ in }
-    var onBrowser:            () -> Void = {}
+    var onToggleBrowser:      () -> Void = {}
+    var onSubmitManualAsk:    (String) -> Void = { _ in }
+    var onClearAttachedImage: () -> Void = {}
 
-    // ── Settings panel actions ──────────────────────────────────────────────
-    var onSettingsChangedActivation: (ActivationMode)   -> Void = { _ in }
-    var onSettingsChangedResponse:   (Int)              -> Void = { _ in }
-    var onSettingsChangedTheme:      (ThemeMode)        -> Void = { _ in }
-    var onSettingsChangedTransparency: (TransparencyMode) -> Void = { _ in }
-    var onSettingsChangedProvider:   (Provider)         -> Void = { _ in }
+    var onSettingsChangedActivation:    (ActivationMode)   -> Void = { _ in }
+    var onSettingsChangedResponse:      (Int)              -> Void = { _ in }
+    var onSettingsChangedTheme:         (ThemeMode)        -> Void = { _ in }
+    var onSettingsChangedTransparency:  (TransparencyMode) -> Void = { _ in }
+    var onSettingsChangedProvider:      (Provider)         -> Void = { _ in }
 }

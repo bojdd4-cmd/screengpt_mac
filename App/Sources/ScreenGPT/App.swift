@@ -2,16 +2,8 @@
 //  App.swift
 //  ScreenGPT
 //
-//  Entry point. Owns the application lifecycle and wires the long-lived
-//  services together:
-//
-//      • BrainBridge      — child Python process via JSON-over-stdio
-//      • LoginController  — login NSWindow (week 3)
-//      • OverlayController — the two NSPanels (panel + bubble)
-//      • DwellMonitor     — 100 Hz cursor polling → button activation
-//      • CaptureService   — ScreenCaptureKit screen capture
-//      • HotkeyManager    — global ⌘⇧S toggle (week 3)
-//      • OverlayDefender  — re-asserts level + ordering every 250 ms
+//  Entry point + AppDelegate.  Owns lifecycle and wires the long-lived
+//  services together.
 //
 //  Boot flow:
 //      app launches → brain starts → ready arrives → LoginController shown
@@ -26,18 +18,10 @@ import Foundation
 struct CalibrationApp {
     static func main() {
         let app = NSApplication.shared
-
         // .accessory = no Dock icon, no Cmd+Tab entry, no menu bar item.
-        // CRITICAL for LDB survival: when LDB activates, it calls
-        // hideOtherApplications on .regular apps but ignores .accessory
-        // ones.  This is layer 1 of the LDB-survival defense; see
-        // OverlayDefender for the rest.
+        // CRITICAL for LDB survival.
         app.setActivationPolicy(.accessory)
-
-        // Install death-cause diagnostics BEFORE run() so signal handlers
-        // are in place from the very first executed instruction.
         Diagnostics.install()
-
         let delegate = AppDelegate()
         app.delegate = delegate
         app.run()
@@ -54,13 +38,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let capture  = CaptureService()
     let login    = LoginController()
     let hotkeys  = HotkeyManager()
-    let browser  = BrowserController()
     lazy var settingsController: SettingsController = SettingsController(sharedModel: overlay.sharedModel)
     lazy var defender: OverlayDefender = OverlayDefender(controller: overlay)
 
     // ── State ───────────────────────────────────────────────────────────────
     private(set) var settings = Settings()
     private(set) var authToken: String?
+    /// Most-recent screenshot base64 + answer — used as context when
+    /// settings.ctxOn is true (sent alongside next scan/manual ask).
+    private var lastScreenshotB64: String?
+    private var lastAnswerText:    String?
 
     private var eventTask: Task<Void, Never>?
     private var toggleHotkeyToken: UInt32 = 0
@@ -70,7 +57,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("starting (build \(buildVersion()))")
 
-        // 1. Start the brain subprocess
         do {
             try brain.start()
             log("BrainBridge started: helper=\(brain.helperPath?.path ?? "?")")
@@ -78,7 +64,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fatalError("Failed to start brain: \(error)")
         }
 
-        // 2. Consume brain events forever
         eventTask = Task { [weak self] in
             guard let self else { return }
             for await event in self.brain.events {
@@ -87,42 +72,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.log("Brain event stream ended.")
         }
 
-        // 3. Pre-create overlay windows (hidden until login + hotkey)
         overlay.preload()
         log("OverlayController preloaded.")
 
-        // 3b. Start the LDB-survival defender.
         defender.start()
         log("OverlayDefender started.")
 
-        // 4. Wire dwell → action handler
+        // ── Dwell → action handler ──────────────────────────────────────────
         dwell.onActivate = { [weak self] buttonID in
             self?.handleDwellActivation(buttonID)
         }
         dwell.onProgress = { [weak self] buttonID, progress in
             self?.overlay.updateHoverProgress(buttonID: buttonID, progress: progress)
         }
-        // DwellMonitor stays paused until the overlay is shown — keeps
-        // CPU at 0 while we're at the login screen.
 
-        // 4b. Wire the action closures invoked by the SwiftUI views.  Click
-        //     handlers and the Settings panel both flow through these.
+        // ── SwiftUI click closures ──────────────────────────────────────────
         overlay.wireActions(.init(
-            onSettings:          { [weak self] in self?.settingsController.show() },
-            onCycleActivation:   { [weak self] in self?.cycleActivationMode() },
-            onScreenshot:        { [weak self] in Task { await self?.runScan() } },
-            onToggleTheme:       { [weak self] in self?.toggleTheme() },
-            onCycleTransparency: { [weak self] in self?.cycleTransparency() },
-            onClose:             { NSApp.terminate(nil) },
-            onCaptureClicked:    { [weak self] in Task { await self?.runScan() } },
-            onTogglePillTapped:  { [weak self] in
+            onSettings:           { [weak self] in self?.settingsController.show() },
+            onCycleActivation:    { [weak self] in self?.cycleActivationMode() },
+            onToggleContext:      { [weak self] in self?.toggleContext() },
+            onScreenshot:         { [weak self] in Task { await self?.handleTopBarScreenshot() } },
+            onToggleTheme:        { [weak self] in self?.toggleTheme() },
+            onCycleTransparency:  { [weak self] in self?.cycleTransparency() },
+            onClose:              { NSApp.terminate(nil) },
+            onCaptureClicked:     { [weak self] in Task { await self?.runScan() } },
+            onTogglePillTapped:   { [weak self] in
                 self?.overlay.toggleProviderDropdown()
                 if let frame = self?.overlay.panelFrame {
                     self?.dwell.setButtons(self?.makeButtons(for: frame) ?? [])
                 }
             },
-            onPickProvider:      { [weak self] p in self?.pickProvider(p) },
-            onBrowser:           { [weak self] in self?.browser.show() },
+            onPickProvider:       { [weak self] p in self?.pickProvider(p) },
+            onToggleBrowser:      { [weak self] in self?.toggleBrowserMode() },
+            onSubmitManualAsk:    { [weak self] text in Task { await self?.runManualAsk(text) } },
+            onClearAttachedImage: { [weak self] in
+                self?.overlay.setAttachedImage(thumb: nil, b64: nil)
+            },
             onSettingsChangedActivation:   { [weak self] m in self?.applyActivationMode(m) },
             onSettingsChangedResponse:     { [weak self] r in self?.applyResponseMode(r) },
             onSettingsChangedTheme:        { [weak self] t in self?.applyTheme(t) },
@@ -130,7 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onSettingsChangedProvider:     { [weak self] p in self?.pickProvider(p) }
         ))
 
-        // 5. Wire LoginController's submit closure to the brain.
+        // ── LoginController submit ──────────────────────────────────────────
         login.model.submit = { [weak self] email, password in
             guard let self else { return }
             self.log("login submit for \(email)")
@@ -141,8 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ])
         }
 
-        // 6. Install global toggle hotkey (⌘⇧S).  Carbon-based, invisible to
-        //    NSEvent global monitors.  Works while LDB is frontmost.
+        // ── Global hotkey ⌘⇧S ───────────────────────────────────────────────
         toggleHotkeyToken = hotkeys.registerToggle { [weak self] in
             self?.handleToggleHotkey()
         }
@@ -152,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log("hotkey registered: ⌘⇧S → toggle overlay")
         }
 
-        // 7. Stealth: auto-hide on screen lock / sleep.  Mirrors CloakGPT.
+        // ── Stealth auto-hide on screen lock / sleep / power-off ────────────
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(handleScreenLock),
             name: NSWorkspace.screensDidSleepNotification, object: nil)
@@ -163,12 +147,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(handleScreenLock),
             name: NSNotification.Name("com.apple.screenIsLocked"), object: nil)
 
-        // 8. Ask brain for initial settings snapshot.  Reply lands in
-        //    handleBrainEvent via .allSettings.
+        // ── Brain: initial settings + boot routing ──────────────────────────
         brain.send(["cmd": "get_all_settings"])
 
-        // 9. Boot routing — env-var quick-paths kept for development.
-        //    Production path is: wait for `ready`, then show login.
         let env = ProcessInfo.processInfo.environment
         if env["CALIB_PREVIEW"] == "1" {
             log("PREVIEW MODE — skipping login, showing overlay")
@@ -185,20 +166,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 "password": pw,
             ])
         }
-        // Otherwise: login window is shown when the brain emits `ready`.
+        // Otherwise: login window shown when brain emits `ready`.
     }
 
-    /// Bring up the overlay panel + start the dwell monitor.  Called from
-    /// PREVIEW mode, from `login_ok` in AUTO-LOGIN mode, and from the
-    /// ⌘⇧S hotkey after login.
+    /// Bring up the overlay + sync dwell state.
     private func startOverlaySession() {
         overlay.setPanelVisible(true)
         if settings.bubbleEnabled {
             overlay.setBubbleVisible(true)
         }
-        // Only start dwell-polling when the current activation mode actually
-        // uses hover.  Click-only users save the 100 Hz cursor poll.
-        if overlay.modelActivationMode.hoverEnabled {
+        updateDwellState()
+    }
+
+    /// Single source of truth for "should the dwell poller be running?".
+    /// Call whenever panel visibility or activation mode changes.
+    private func updateDwellState() {
+        let shouldRun = overlay.isPanelVisible
+            && overlay.modelActivationMode.hoverEnabled
+        if shouldRun {
             dwell.start()
             dwell.setButtons(makeButtons(for: overlay.panelFrame))
         } else {
@@ -206,10 +191,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// ⌘⇧S handler.  Behavior depends on app state:
-    ///   • Not logged in   → bring login window forward
-    ///   • Logged in, hidden → show overlay
-    ///   • Logged in, visible → hide overlay
     private func handleToggleHotkey() {
         log("⌘⇧S pressed")
         if authToken == nil {
@@ -219,36 +200,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if overlay.isPanelVisible {
             overlay.setPanelVisible(false)
             overlay.setBubbleVisible(false)
-            dwell.stop()
+            updateDwellState()
         } else {
             startOverlaySession()
         }
     }
 
-    // ── Top-bar action handlers (called from click closures) ───────────────
+    // ── Top-bar action handlers ─────────────────────────────────────────────
 
-    /// Cycle dark → light → dark.  Persist via brain so the next launch
-    /// remembers the choice.
     private func toggleTheme() {
         let next: ThemeMode = (overlay.modelThemeMode == .dark) ? .light : .dark
         applyTheme(next)
     }
 
-    /// Cycle Solid → Glass → Ghost → Solid.  Persist via brain.
     private func cycleTransparency() {
         let cur = overlay.modelTransparencyMode
         let next = TransparencyMode(rawValue: (cur.rawValue + 1) % 3) ?? .full
         applyTransparency(next)
     }
 
-    /// Cycle Click → Hover → Both → Click.  Used by the top-bar Mode toggle.
     private func cycleActivationMode() {
         let cur = overlay.modelActivationMode
         let next = ActivationMode(rawValue: (cur.rawValue + 1) % 3) ?? .click
         applyActivationMode(next)
     }
 
-    // ── Apply-and-persist helpers (also called from Settings panel) ────────
+    private func toggleContext() {
+        let next = !overlay.modelContextOn
+        overlay.setContextOn(next)
+        settings.ctxOn = next
+        brain.send(["cmd": "set_setting", "key": "ctx_on", "value": next])
+        log("context → \(next ? "on" : "off")")
+    }
+
+    /// Top-bar camera icon — captures the screen and:
+    ///   1. Copies the image to NSPasteboard so the user can ⌘V-paste it into
+    ///      external apps (Google, ChatGPT, etc).
+    ///   2. Attaches the image to the manual-input bar so the next Enter-press
+    ///      sends it with their typed question.
+    private func handleTopBarScreenshot() async {
+        do {
+            let b64 = try await capture.capturePNGBase64()
+            guard let pngData = Data(base64Encoded: b64),
+                  let image   = NSImage(data: pngData) else { return }
+
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setData(pngData, forType: .png)
+            if let tiff = image.tiffRepresentation {
+                pb.setData(tiff, forType: .tiff)
+            }
+            overlay.setAttachedImage(thumb: image, b64: b64)
+            log("screenshot copied to clipboard + attached to chat")
+        } catch {
+            log("screenshot failed: \(error)")
+        }
+    }
+
+    private func toggleBrowserMode() {
+        let next = !overlay.modelIsBrowserMode
+        overlay.setBrowserMode(next)
+        if next {
+            BrowserController.shared.loadHomeIfBlank()
+        }
+        log("browser mode → \(next)")
+    }
+
+    // ── Apply-and-persist helpers ──────────────────────────────────────────
 
     private func applyTheme(_ mode: ThemeMode) {
         overlay.applyTheme(mode)
@@ -268,14 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.setActivationMode(mode)
         settings.activationMode = mode.rawValue
         brain.send(["cmd": "set_setting", "key": "activation_mode", "value": mode.rawValue])
-        // When dwell is disabled, stop polling — saves CPU.  When re-enabled,
-        // start it back up if the panel is visible.
-        if mode == .click {
-            dwell.stop()
-        } else if overlay.isPanelVisible {
-            dwell.start()
-            dwell.setButtons(makeButtons(for: overlay.panelFrame))
-        }
+        updateDwellState()
         log("activation → \(mode.displayName)")
     }
 
@@ -288,13 +299,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handleScreenLock() {
-        // Defense in depth — even though sharingType=.none hides us from
-        // the screen-capture pipeline, an active hover progressing during
-        // a lock screen would burn CPU and look suspicious in logs.
         log("screen locked / power off — hiding overlay")
         overlay.setPanelVisible(false)
         overlay.setBubbleVisible(false)
-        dwell.stop()
+        updateDwellState()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -304,7 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        log("[CLEAN-EXIT] applicationWillTerminate fired. Shutting brain down.")
+        log("[CLEAN-EXIT] applicationWillTerminate fired.")
         if toggleHotkeyToken != 0 {
             hotkeys.unregister(toggleHotkeyToken)
         }
@@ -320,9 +328,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         case .ready(let v):
             log("brain ready (v\(v))")
-            // Production boot: show the login window now that the brain
-            // can answer auth requests.  Skip when env-var quick-paths
-            // are driving the boot.
             let env = ProcessInfo.processInfo.environment
             if env["CALIB_PREVIEW"] != "1"
                 && env["CALIB_EMAIL"]   == nil
@@ -334,8 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settings = Settings.fromBrainSnapshot(snapshot)
             overlay.setCurrentProvider(settings.aiProvider)
             overlay.setResponseMode(settings.respMode)
-            // Apply persisted appearance + interaction prefs so the panel
-            // boots with the user's last-used preferences.
+            overlay.setContextOn(settings.ctxOn)
             if let theme = ThemeMode(rawValue: settings.themeMode) {
                 overlay.applyTheme(theme)
             }
@@ -345,23 +349,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let act = ActivationMode(rawValue: settings.activationMode) {
                 overlay.setActivationMode(act)
             }
+            // Apply dwell state now that activation mode is loaded from disk.
+            updateDwellState()
             log("settings loaded: provider=\(settings.aiProvider.rawValue) "
-                + "theme=\(settings.themeMode) trans=\(settings.transparencyMode) "
-                + "act=\(settings.activationMode) resp=\(settings.respMode)")
+                + "act=\(settings.activationMode) ctx=\(settings.ctxOn) "
+                + "theme=\(settings.themeMode) resp=\(settings.respMode)")
 
-        case .settingValue(let key, _):
-            // Pull the full snapshot back to stay in sync.
+        case .settingValue(_, _):
             brain.send(["cmd": "get_all_settings"])
-            _ = key
 
         case .loginOK(let token):
             authToken = token
             overlay.setLoggedIn(true)
             log("logged in (token \(token.prefix(10))…)")
             login.close()
-            // Bring up the overlay immediately on first successful login
-            // so the user sees the panel land.  Subsequent hides are
-            // controlled by ⌘⇧S / the X button.
             startOverlaySession()
 
         case .loginErr(let code, let msg):
@@ -370,13 +371,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         case .scanOK(let answer, let provider, _, _):
             log("scan answer (\(provider)): \(answer.prefix(80))…")
-            overlay.setAnswer(answer)
+            overlay.appendChat(.assistant(answer))
             overlay.setScanning(false)
             overlay.setStatusBanner(nil)
+            lastAnswerText = answer
 
         case .scanErr(let msg):
             log("scan error: \(msg)")
-            overlay.setAnswer("Error: \(msg)")
+            overlay.appendChat(.system("Error: \(msg)"))
             overlay.setScanning(false)
             overlay.setStatusBanner(nil)
 
@@ -390,10 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .log(let level, let msg):
             log("brain.\(level): \(msg)")
 
-        case .pong:
-            break
-
-        case .machineId, .loggedOut, .shutdownOk, .usageFull, .unknown:
+        case .pong, .machineId, .loggedOut, .shutdownOk, .usageFull, .unknown:
             break
         }
     }
@@ -426,36 +425,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .capture:
             Task { await runScan() }
 
-        case .hide:
-            // X button — hide everything, kill dwell so CPU drops to 0.
-            overlay.setPanelVisible(false)
-            overlay.setBubbleVisible(false)
-            dwell.stop()
-
-        case .modeMin: settings.respMode = 0; pushRespMode()
-        case .modeCon: settings.respMode = 1; pushRespMode()
-        case .modeDet: settings.respMode = 2; pushRespMode()
-
-        case .context:
-            settings.ctxOn.toggle()
-            brain.send(["cmd": "set_setting", "key": "ctx_on", "value": settings.ctxOn])
-
-        case .invisible:
-            settings.invMode.toggle()
-            brain.send(["cmd": "set_setting", "key": "inv_mode", "value": settings.invMode])
-
-        case .bubble:
-            settings.bubbleEnabled.toggle()
-            brain.send(["cmd": "set_setting", "key": "bubble_enabled", "value": settings.bubbleEnabled])
-            overlay.setBubbleVisible(settings.bubbleEnabled)
-
-        case .scrollUp:    overlay.scrollAnswer(by: -40)
-        case .scrollDown:  overlay.scrollAnswer(by:  40)
-
         case .providerPill:
             overlay.toggleProviderDropdown()
-            // Re-register dwell buttons so the four provider option rects
-            // become hot when the dropdown is open.
             dwell.setButtons(makeButtons(for: overlay.panelFrame))
 
         case .providerOpt0: pickProvider(.grok)
@@ -463,8 +434,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .providerOpt2: pickProvider(.gemini)
         case .providerOpt3: pickProvider(.claude)
 
-        case .tab:
-            overlay.setPanelVisible(true)
+        case .scrollUp:    overlay.scrollAnswer(by: -40)
+        case .scrollDown:  overlay.scrollAnswer(by:  40)
+
+        // Dead branches — old UI buttons whose rects were removed in week 5.
+        // Kept for exhaustiveness; never fire because their rects aren't
+        // registered with the dwell monitor.
+        case .hide, .modeMin, .modeCon, .modeDet, .context,
+             .invisible, .bubble, .tab:
+            break
         }
     }
 
@@ -473,13 +451,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         brain.send(["cmd": "set_setting", "key": "ai_provider", "value": p.rawValue])
         overlay.setCurrentProvider(p)
         overlay.collapseProviderDropdown()
-        // Re-register dwell buttons so the dropdown options no longer
-        // accept hover hits.
+        // Per-session history is provider-scoped — wipe on switch.
+        overlay.clearChat()
+        lastScreenshotB64 = nil
+        lastAnswerText    = nil
         dwell.setButtons(makeButtons(for: overlay.panelFrame))
-    }
-
-    private func pushRespMode() {
-        brain.send(["cmd": "set_setting", "key": "resp_mode", "value": settings.respMode])
+        log("provider → \(p.rawValue) (chat cleared)")
     }
 
     // ── Scan flow ───────────────────────────────────────────────────────────
@@ -487,31 +464,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func runScan() async {
         guard authToken != nil else {
             log("scan ignored — not logged in")
-            overlay.setAnswer("Please log in first.")
+            overlay.appendChat(.system("Please log in first."))
             return
         }
-        // Clear the answer area while scanning — the status banner is the
-        // single source of truth for "what's happening right now."  Two
-        // copies of "Asking Grok…" (banner + answer text) ghost each other
-        // when SwiftUI re-rasterises the panel.
         overlay.setScanning(true)
-        overlay.setAnswer("")
         overlay.setStatusBanner("Capturing screen…")
         do {
             let b64 = try await capture.capturePNGBase64()
+            // Append the user-side message to the chat so the history shows
+            // "user: [screenshot]" → AI answer once it arrives.
+            overlay.appendChat(.user("[screenshot]", hasImage: true))
+
+            // The brain auto-tracks the last screenshot + answer on its
+            // side and re-includes them in the next request when
+            // use_context is true — Swift doesn't need to forward them.
             brain.send([
-                "cmd":      "scan",
-                "image_b64": b64,
-                "mode":      settings.respMode,
-                "provider":  settings.aiProvider.rawValue,
+                "cmd":         "scan",
+                "image_b64":   b64,
+                "mode":        settings.respMode,
+                "provider":    settings.aiProvider.rawValue,
                 "use_context": settings.ctxOn,
             ])
+            lastScreenshotB64 = b64
         } catch {
             log("capture failed: \(error)")
-            overlay.setAnswer("Screen capture failed: \(error.localizedDescription)")
+            overlay.appendChat(.system("Screen capture failed: \(error.localizedDescription)"))
             overlay.setScanning(false)
             overlay.setStatusBanner(nil)
         }
+    }
+
+    /// Manual text-ask flow.  Mirror of runScan but the user provides text,
+    /// and we capture the current screen as supporting context (auto-context
+    /// per user spec — better answers than text-only).  If they already
+    /// attached an image via the Camera icon, we use that instead of
+    /// capturing fresh.
+    private func runManualAsk(_ text: String) async {
+        guard authToken != nil else {
+            overlay.appendChat(.system("Please log in first."))
+            return
+        }
+        overlay.setScanning(true)
+        overlay.setStatusBanner("Asking \(settings.aiProvider.displayName)…")
+
+        // Decide on the image to send (attached → use it; else → capture fresh).
+        let imageB64: String
+        if let attached = overlay.sharedModel.attachedImageB64 {
+            imageB64 = attached
+            overlay.setAttachedImage(thumb: nil, b64: nil)
+        } else {
+            do {
+                imageB64 = try await capture.capturePNGBase64()
+            } catch {
+                log("manual-ask capture failed: \(error)")
+                overlay.appendChat(.user(text))
+                overlay.appendChat(.system("Couldn't capture screen for context: \(error.localizedDescription)"))
+                overlay.setScanning(false)
+                overlay.setStatusBanner(nil)
+                return
+            }
+        }
+        overlay.appendChat(.user(text, hasImage: true))
+
+        brain.send([
+            "cmd":           "scan",
+            "image_b64":     imageB64,
+            "mode":          settings.respMode,
+            "provider":      settings.aiProvider.rawValue,
+            "use_context":   settings.ctxOn,
+            "user_question": text,   // brain forwards to backend
+        ])
+        lastScreenshotB64 = imageB64
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
@@ -526,9 +549,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             out.append(.init(id: id, rect: screenRect))
         }
-        // Add provider-dropdown option rects only when the dropdown is
-        // expanded — otherwise the cursor reading the answer text would
-        // accidentally dwell-hit those rects.
         if overlay.isDropdownExpanded {
             for (id, local) in ButtonRects.providerOptions {
                 let screenRect = NSRect(

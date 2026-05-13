@@ -489,10 +489,14 @@ def handle_scan(state: BrainState, cmd: Dict[str, Any]) -> None:
         emit({"evt": "scan_err", "msg": "Not logged in."})
         return
 
-    img_b64  = cmd.get("image_b64", "")
-    mode     = int(cmd.get("mode", state.settings.get("resp_mode", 1)))
-    provider = cmd.get("provider") or state.settings.get("ai_provider", "grok")
-    use_ctx  = bool(cmd.get("use_context", state.settings.get("ctx_on", False)))
+    img_b64       = cmd.get("image_b64", "")
+    mode          = int(cmd.get("mode", state.settings.get("resp_mode", 1)))
+    provider      = cmd.get("provider") or state.settings.get("ai_provider", "grok")
+    use_ctx       = bool(cmd.get("use_context", state.settings.get("ctx_on", False)))
+    # Week 5 — optional text question from the manual-ask flow.  Forwarded
+    # to the backend so the AI sees both the screen and the user's typed
+    # question.  Empty when called via Capture / Camera (image-only scan).
+    user_question = (cmd.get("user_question") or "").strip()
 
     if not img_b64:
         emit({"evt": "scan_err", "msg": "No image provided."})
@@ -529,6 +533,8 @@ def handle_scan(state: BrainState, cmd: Dict[str, Any]) -> None:
     if use_ctx and state.last_b64 and state.last_answer:
         body["context_image"]  = state.last_b64
         body["context_answer"] = state.last_answer
+    if user_question:
+        body["user_question"] = user_question
 
     label       = prov_label(provider)
     switch_hint = " — switch to a different AI in the dropdown"

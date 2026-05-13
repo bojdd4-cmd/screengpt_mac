@@ -146,10 +146,6 @@ final class OverlayController {
         }
     }
 
-    func setAnswer(_ text: String) {
-        model.answer = text
-    }
-
     func updateHoverProgress(buttonID: ButtonID, progress: Double) {
         model.hoverButton = buttonID
         model.hoverProgress = progress
@@ -170,8 +166,11 @@ final class OverlayController {
         model.providerDropdownExpanded = false
     }
 
+    /// Week 5: scroll is now handled natively by the SwiftUI ScrollView in
+    /// the chat history.  Kept as a no-op so old dwell handlers compile;
+    /// the scroll rails were removed from the UI entirely.
     func scrollAnswer(by delta: CGFloat) {
-        model.scrollOffset = max(0, model.scrollOffset + delta)
+        _ = delta
     }
 
     /// Mirror the brain's stored provider into the dropdown UI.  AppDelegate
@@ -201,7 +200,12 @@ final class OverlayController {
 
     // MARK: - Internals
 
-    private let panelSize  = NSSize(width: ButtonRects.panelW, height: ButtonRects.panelH)
+    /// Week 5: bigger default so chat history + manual input + bigger
+    /// browser viewport all fit comfortably.  User can resize via the
+    /// bottom-right grip; ButtonRects is sized for the default but the
+    /// grip-resize doesn't re-layout dwell hit rects (hover users should
+    /// keep the default size).
+    private let panelSize  = NSSize(width: 720, height: 480)
     private let bubbleSize = NSSize(width: 420, height: 320)
 
     private func ensurePanelWindow() -> NSPanel {
@@ -330,19 +334,21 @@ final class OverlayController {
         bubbleWindow?.appearance = appearance
     }
 
-    /// Wire up the action closures invoked by SwiftUI buttons.  Called once
-    /// from AppDelegate so views don't need to import AppDelegate.
+    /// Wire up the action closures invoked by SwiftUI buttons.
     struct Actions {
-        var onSettings:          () -> Void
-        var onCycleActivation:   () -> Void
-        var onScreenshot:        () -> Void
-        var onToggleTheme:       () -> Void
-        var onCycleTransparency: () -> Void
-        var onClose:             () -> Void
-        var onCaptureClicked:    () -> Void
-        var onTogglePillTapped:  () -> Void
-        var onPickProvider:      (Provider) -> Void
-        var onBrowser:           () -> Void
+        var onSettings:           () -> Void
+        var onCycleActivation:    () -> Void
+        var onToggleContext:      () -> Void
+        var onScreenshot:         () -> Void
+        var onToggleTheme:        () -> Void
+        var onCycleTransparency:  () -> Void
+        var onClose:              () -> Void
+        var onCaptureClicked:     () -> Void
+        var onTogglePillTapped:   () -> Void
+        var onPickProvider:       (Provider) -> Void
+        var onToggleBrowser:      () -> Void
+        var onSubmitManualAsk:    (String) -> Void
+        var onClearAttachedImage: () -> Void
         var onSettingsChangedActivation:    (ActivationMode)   -> Void
         var onSettingsChangedResponse:      (Int)              -> Void
         var onSettingsChangedTheme:         (ThemeMode)        -> Void
@@ -353,6 +359,7 @@ final class OverlayController {
     func wireActions(_ a: Actions) {
         model.onSettings              = a.onSettings
         model.onCycleActivation       = a.onCycleActivation
+        model.onToggleContext         = a.onToggleContext
         model.onScreenshot            = a.onScreenshot
         model.onToggleTheme           = a.onToggleTheme
         model.onCycleTransparency     = a.onCycleTransparency
@@ -360,7 +367,9 @@ final class OverlayController {
         model.onCaptureClicked        = a.onCaptureClicked
         model.onTogglePillTapped      = a.onTogglePillTapped
         model.onPickProvider          = a.onPickProvider
-        model.onBrowser               = a.onBrowser
+        model.onToggleBrowser         = a.onToggleBrowser
+        model.onSubmitManualAsk       = a.onSubmitManualAsk
+        model.onClearAttachedImage    = a.onClearAttachedImage
         model.onSettingsChangedActivation   = a.onSettingsChangedActivation
         model.onSettingsChangedResponse     = a.onSettingsChangedResponse
         model.onSettingsChangedTheme        = a.onSettingsChangedTheme
@@ -368,9 +377,36 @@ final class OverlayController {
         model.onSettingsChangedProvider     = a.onSettingsChangedProvider
     }
 
-    /// Expose the shared OverlayModel so the new SettingsController can
-    /// bind directly to it (segmented controls auto-update the live overlay).
     var sharedModel: OverlayModel { model }
+
+    // MARK: - Chat / browser / context helpers
+
+    /// Append a message to the per-session chat log.
+    func appendChat(_ msg: ChatMessage) {
+        model.chat.append(msg)
+    }
+
+    /// Wipe the chat history.  Called when the user switches AI provider
+    /// per user spec (per-session history is provider-scoped).
+    func clearChat() {
+        model.chat.removeAll()
+    }
+
+    func setBrowserMode(_ on: Bool) {
+        model.isBrowserMode = on
+    }
+
+    func setContextOn(_ on: Bool) {
+        model.contextOn = on
+    }
+
+    func setAttachedImage(thumb: NSImage?, b64: String?) {
+        model.attachedImageThumb = thumb
+        model.attachedImageB64   = b64
+    }
+
+    var modelContextOn:      Bool       { model.contextOn }
+    var modelIsBrowserMode:  Bool       { model.isBrowserMode }
 
     private func positionInCorner(_ window: NSPanel, corner: Int, size: NSSize) {
         guard let screen = NSScreen.main else { return }
