@@ -60,8 +60,12 @@ echo ""
 # Unload BEFORE killing so launchd doesn't immediately respawn us.
 echo "[1/7] Unloading LaunchAgent + killing running instances..."
 LAUNCH_AGENT_FILE="$HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
+UID_NUM=$(id -u)
+# Modern bootout (works on macOS 11+).  Older `launchctl unload` may
+# silently fail on Sonoma+ but doesn't hurt to try as fallback.
+launchctl bootout "gui/$UID_NUM/$BUNDLE_ID" 2>/dev/null || true
+launchctl unload "$LAUNCH_AGENT_FILE" 2>/dev/null || true
 if [ -f "$LAUNCH_AGENT_FILE" ]; then
-    launchctl unload "$LAUNCH_AGENT_FILE" 2>/dev/null || true
     rm -f "$LAUNCH_AGENT_FILE"
     echo "  [OK] LaunchAgent unloaded + plist removed"
 fi

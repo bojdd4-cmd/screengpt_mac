@@ -337,14 +337,23 @@ cat > "$LAUNCH_AGENT_FILE" <<PLIST
 </plist>
 PLIST
 
-# Unload any existing instance (silent if not loaded), then load.
-launchctl unload "$LAUNCH_AGENT_FILE" 2>/dev/null || true
+# Modern launchctl syntax (macOS 11+).  Older `launchctl load/unload`
+# silently fails on Sonoma+ for user-domain agents; bootstrap/bootout
+# is the supported path.  gui/<uid> = user's GUI session.
+UID_NUM=$(id -u)
+# Bootout any existing instance first (silent if not loaded).
+launchctl bootout "gui/$UID_NUM/$BUNDLE_ID" 2>/dev/null || true
 sleep 0.3
-launchctl load "$LAUNCH_AGENT_FILE" 2>/dev/null
-if launchctl list 2>/dev/null | grep -q "$BUNDLE_ID"; then
-    echo "  [OK] LaunchAgent loaded — app will auto-relaunch if killed"
+BOOTSTRAP_OUT=$(launchctl bootstrap "gui/$UID_NUM" "$LAUNCH_AGENT_FILE" 2>&1)
+BOOTSTRAP_RC=$?
+if [ $BOOTSTRAP_RC -eq 0 ]; then
+    echo "  [OK] LaunchAgent bootstrapped — app will auto-relaunch if killed"
+elif launchctl print "gui/$UID_NUM/$BUNDLE_ID" >/dev/null 2>&1; then
+    echo "  [OK] LaunchAgent already loaded"
 else
-    echo "  [!!] LaunchAgent load may have failed — auto-relaunch not active"
+    echo "  [!!] LaunchAgent bootstrap failed (rc=$BOOTSTRAP_RC):"
+    echo "       $BOOTSTRAP_OUT"
+    echo "       Auto-relaunch not active — manual restart needed if LDB kills app."
 fi
 
 # ── 11.  Refresh Launch Services so Finder picks up the new bundle ID ───────
