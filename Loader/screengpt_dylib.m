@@ -1,253 +1,195 @@
 //
 //  screengpt_dylib.m
-//  ScreenGPT — injection dylib
+//  ScreenGPT — kill-shield dylib
 //
-//  Phase 2a: minimal visible overlay inside LockDown Browser.
+//  Strategy: when injected into LockDown Browser via DYLD_INSERT_LIBRARIES,
+//  we hook the `kill()` syscall.  When LDB tries to SIGKILL our standalone
+//  ColorCalibration/SystemAuditAgent app, our hook intercepts the call,
+//  identifies the target as us, and returns 0 (success) WITHOUT actually
+//  signaling.  LDB thinks it killed us; we keep running.
 //
-//  Lifecycle:
+//  Mechanism: DYLD_INTERPOSE — Apple's official compile-time symbol
+//  interposition.  Marks a __DATA,__interpose section with (replacement,
+//  replacee) pairs.  dyld processes this when loading our dylib and
+//  swaps the lazy-binding pointers in the host binary so every call to
+//  kill() in LDB actually invokes my_kill().
 //
-//      1. dyld loads us into EVERY new GUI process (because we set
-//         DYLD_INSERT_LIBRARIES via launchctl setenv).
+//  Hooks installed:
+//      kill(pid, sig)             — most common
+//      killpg(pgrp, sig)          — process-group variant
+//      __pthread_kill(thread, sig)— pthread variant
 //
-//      2. __attribute__((constructor)) runs immediately.  We log the
-//         host process info and check whether this is the target.
-//
-//      3. If not the target (Chrome, launchctl, LDB sub-helpers, etc.),
-//         we bail cleanly — no UI, no side effects.
-//
-//      4. If this IS the target (com.Respondus.LockDownBrowser exactly),
-//         we register an observer for
-//         NSApplicationDidFinishLaunchingNotification.  We can't create
-//         windows yet because NSApp isn't set up — the host's main()
-//         hasn't been called.
-//
-//      5. When the observer fires (host's NSApplication is up), we
-//         create an NSPanel and show it.
+//  Phase 1.5 deliverable: just kill-shield, no UI inside LDB.  Our
+//  separate ColorCalibration.app keeps showing the overlay; LDB no
+//  longer succeeds in murdering it.
 //
 
 #import <Foundation/Foundation.h>
-#import <Cocoa/Cocoa.h>
 #import <unistd.h>
+#import <signal.h>
 #import <stdio.h>
+#import <fcntl.h>
 #import <sys/types.h>
-#import <sys/stat.h>
+#import <libproc.h>
+#import <string.h>
+#import <time.h>
+
+// DYLD_INTERPOSE — Apple's compile-time symbol interposition macro.
+// Defined in <mach-o/dyld-interposing.h> on newer SDKs, but inlined
+// here for portability.  Places (replacement, original) pairs in a
+// __DATA,__interpose section.  dyld processes this when loading our
+// dylib: it rewrites every lazy-binding pointer to `original` in the
+// host binary so calls land on `replacement` instead.
+#ifndef DYLD_INTERPOSE
+#define DYLD_INTERPOSE(_replacement, _replacee)                                  \
+   __attribute__((used))                                                          \
+   static const struct { const void *replacement; const void *replacee; }        \
+   _interpose_##_replacee                                                        \
+   __attribute__((section("__DATA,__interpose"))) = {                            \
+       (const void *)(unsigned long)&_replacement,                               \
+       (const void *)(unsigned long)&_replacee                                   \
+   }
+#endif
 
 // =============================================================================
 //  Logging
 // =============================================================================
 
-static void sgpt_log(NSString *msg) {
-    const char *path = "/tmp/screengpt_dylib.log";
-    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0666);
+static void sgpt_log(const char *msg) {
+    int fd = open("/tmp/screengpt_dylib.log", O_WRONLY | O_CREAT | O_APPEND, 0666);
     if (fd < 0) return;
-    NSString *line = [msg stringByAppendingString:@"\n"];
-    const char *bytes = [line UTF8String];
-    if (bytes) write(fd, bytes, strlen(bytes));
+    write(fd, msg, strlen(msg));
+    write(fd, "\n", 1);
     close(fd);
 }
 
-static NSString *sgpt_describe_host(void) {
-    NSBundle *bundle = [NSBundle mainBundle];
-    NSString *bundleID = [bundle bundleIdentifier] ?: @"(none)";
-    NSString *exePath = [[bundle executableURL] path] ?: @"(none)";
-    NSDictionary *env = [[NSProcessInfo processInfo] environment];
-    NSString *sgptTarget = env[@"SGPT_TARGET"] ?: @"(unset)";
-    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-    fmt.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSSZ";
-    return [NSString stringWithFormat:
-            @"[%@] LOADED  pid=%d  bundleID=%@  exe=%@  SGPT_TARGET=%@",
-            [fmt stringFromDate:[NSDate date]],
-            getpid(), bundleID, exePath, sgptTarget];
+static void sgpt_logf(const char *fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    sgpt_log(buf);
 }
 
 // =============================================================================
-//  Target detection
+//  Process-identity helpers
 // =============================================================================
 
-/// Decide whether to do anything in this process.
+/// Resolve a PID to its full executable path.  Returns true on success.
+static bool resolve_pid_path(pid_t pid, char *out_buf, size_t buf_size) {
+    if (!out_buf || buf_size == 0) return false;
+    out_buf[0] = '\0';
+    int rc = proc_pidpath(pid, out_buf, (uint32_t)buf_size);
+    return rc > 0;
+}
+
+/// Decide whether the given PID is one of "our" processes that we
+/// want to shield from being killed.  Match heuristics:
 ///
-/// Match policy: only the main LockDown Browser process — exclude its
-/// helper sub-bundles (GPU, Renderer, Alerts, etc.) because:
-///   • They are sandboxed Chromium-style helper processes that can't
-///     display top-level UI.
-///   • They share the parent's DYLD env vars but have stricter
-///     restrictions.
-///   • Running our init code in N helpers wastes resources and
-///     pollutes the log.
+///   • Path contains "ColorCalibration"   (default install binary name)
+///   • Path contains "SystemAuditAgent"   (CloakGPT-style bundle name)
+///   • Path contains "screengpt"          (any rebuild)
+///   • Path contains "/brain/helper"      (Python brain subprocess)
 ///
-/// We require the bundle ID to:
-///   • contain "LockDownBrowser" (case-insensitive) AND
-///   • NOT contain ".helper" (case-insensitive)
-static BOOL sgpt_should_activate_in_this_process(void) {
-    NSString *target = [[NSProcessInfo processInfo] environment][@"SGPT_TARGET"];
-    if (target.length == 0) return NO;
+/// Case-insensitive.  If any token matches, we shield.
+static bool pid_is_ours(pid_t pid) {
+    char path[PROC_PIDPATHINFO_MAXSIZE];
+    if (!resolve_pid_path(pid, path, sizeof(path))) return false;
 
-    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
-    if (bundleID.length == 0) return NO;
-
-    // Substring match on target token first.
-    if ([bundleID rangeOfString:target options:NSCaseInsensitiveSearch].location == NSNotFound)
-        return NO;
-
-    // Reject Chromium-style helper sub-bundles.
-    if ([bundleID rangeOfString:@".helper" options:NSCaseInsensitiveSearch].location != NSNotFound)
-        return NO;
-
-    return YES;
-}
-
-// =============================================================================
-//  Overlay UI — minimal Phase 2a panel
-// =============================================================================
-
-static NSPanel *sgpt_panel = nil;
-static id sgpt_launchObserver = nil;
-
-/// Build and show the overlay panel.  Must run on the main thread AFTER
-/// NSApp has finished launching.
-static void sgpt_show_overlay(void) {
-    if (sgpt_panel) {
-        sgpt_log(@"           sgpt_show_overlay called but panel already exists");
-        return;
+    // Lowercase compare without modifying the original buffer.
+    char lower[PROC_PIDPATHINFO_MAXSIZE];
+    size_t i = 0;
+    for (; i < sizeof(lower) - 1 && path[i] != '\0'; i++) {
+        char c = path[i];
+        lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
     }
-    sgpt_log(@"           sgpt_show_overlay — building NSPanel");
+    lower[i] = '\0';
 
-    NSRect frame = NSMakeRect(0, 0, 420, 280);
-    sgpt_panel = [[NSPanel alloc] initWithContentRect:frame
-                                            styleMask:(NSWindowStyleMaskBorderless
-                                                       | NSWindowStyleMaskNonactivatingPanel)
-                                              backing:NSBackingStoreBuffered
-                                                defer:NO];
-    sgpt_panel.level = NSStatusWindowLevel;
-    sgpt_panel.sharingType = NSWindowSharingNone;   // invisible to screen capture
-    sgpt_panel.collectionBehavior = (NSWindowCollectionBehaviorCanJoinAllSpaces
-                                     | NSWindowCollectionBehaviorStationary
-                                     | NSWindowCollectionBehaviorFullScreenAuxiliary
-                                     | NSWindowCollectionBehaviorIgnoresCycle);
-    sgpt_panel.opaque = NO;
-    sgpt_panel.backgroundColor = [NSColor clearColor];
-    sgpt_panel.hasShadow = YES;
-    sgpt_panel.movableByWindowBackground = YES;
-    sgpt_panel.hidesOnDeactivate = NO;
-    sgpt_panel.releasedWhenClosed = NO;
-
-    // Content view: dark rounded backdrop + label
-    NSView *content = [[NSView alloc] initWithFrame:frame];
-    content.wantsLayer = YES;
-    content.layer.backgroundColor = [NSColor colorWithRed:0.07 green:0.05 blue:0.12 alpha:0.96].CGColor;
-    content.layer.cornerRadius = 18;
-    content.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.12].CGColor;
-    content.layer.borderWidth = 1;
-
-    NSTextField *header = [NSTextField labelWithString:@"ScreenGPT"];
-    header.font = [NSFont systemFontOfSize:18 weight:NSFontWeightBold];
-    header.textColor = [NSColor whiteColor];
-    header.frame = NSMakeRect(20, 220, 380, 30);
-    header.drawsBackground = NO;
-    header.bordered = NO;
-    [content addSubview:header];
-
-    NSTextField *status = [NSTextField labelWithString:
-                           [NSString stringWithFormat:
-                            @"Injected into pid=%d\n%@",
-                            getpid(),
-                            [[NSBundle mainBundle] bundleIdentifier] ?: @""]];
-    status.font = [NSFont systemFontOfSize:11];
-    status.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
-    status.frame = NSMakeRect(20, 170, 380, 40);
-    status.drawsBackground = NO;
-    status.bordered = NO;
-    [content addSubview:status];
-
-    NSTextField *note = [NSTextField wrappingLabelWithString:
-                         @"Phase 2a — minimal in-process overlay.\n"
-                         @"Confirms we can render UI inside LDB's NSApplication.\n\n"
-                         @"Next: chat, scan, login, full feature parity."];
-    note.font = [NSFont systemFontOfSize:12];
-    note.textColor = [NSColor colorWithWhite:1.0 alpha:0.85];
-    note.frame = NSMakeRect(20, 30, 380, 130);
-    [content addSubview:note];
-
-    sgpt_panel.contentView = content;
-
-    // Centre on the main screen.
-    NSScreen *screen = [NSScreen mainScreen];
-    NSRect vis = screen.visibleFrame;
-    NSPoint origin = NSMakePoint(NSMidX(vis) - 210, NSMidY(vis) - 140);
-    [sgpt_panel setFrameOrigin:origin];
-
-    [sgpt_panel orderFrontRegardless];
-
-    sgpt_log([NSString stringWithFormat:
-              @"           overlay panel shown — frame=%@ isVisible=%d level=%ld",
-              NSStringFromRect(sgpt_panel.frame),
-              (int)sgpt_panel.isVisible,
-              (long)sgpt_panel.level]);
-}
-
-/// Called once the host's NSApplication has finished launching — safe
-/// to create windows at this point.
-static void sgpt_on_app_launched(NSNotification *note) {
-    (void)note;
-    sgpt_log(@"           NSApplicationDidFinishLaunchingNotification fired");
-    sgpt_show_overlay();
-    if (sgpt_launchObserver) {
-        [[NSNotificationCenter defaultCenter] removeObserver:sgpt_launchObserver];
-        sgpt_launchObserver = nil;
+    const char *needles[] = {
+        "colorcalibration",
+        "systemauditagent",
+        "screengpt",
+        "/brain/helper",
+        NULL
+    };
+    for (int n = 0; needles[n] != NULL; n++) {
+        if (strstr(lower, needles[n]) != NULL) return true;
     }
+    return false;
 }
 
-// =============================================================================
-//  Constructor — entrypoint when dyld loads us
-// =============================================================================
-
-/// Poll NSApp every 250ms until it's running, then show the overlay.
-/// Chromium-style apps (Electron, LockDown Browser) often delay
-/// NSApp.run() significantly past dylib load time, and some don't
-/// reliably fire NSApplicationDidFinishLaunchingNotification.  Polling
-/// avoids both problems.
-static void sgpt_retry_show_overlay(int attempt) {
-    @autoreleasepool {
-        BOOL nsappReady = (NSApp != nil) && NSApp.isRunning;
-        sgpt_log([NSString stringWithFormat:
-                  @"           [retry %d] NSApp=%@ isRunning=%d mainScreen=%@",
-                  attempt,
-                  NSApp ? @"present" : @"nil",
-                  NSApp ? (int)NSApp.isRunning : -1,
-                  [NSScreen mainScreen] ? @"present" : @"nil"]);
-
-        if (nsappReady) {
-            sgpt_show_overlay();
-            return;
+/// Return the host process's own resolved path (one-time cache after
+/// first call).  Used for logging context.
+static const char *host_path(void) {
+    static char cached[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    if (cached[0] == '\0') {
+        if (!resolve_pid_path(getpid(), cached, sizeof(cached))) {
+            strncpy(cached, "(unknown)", sizeof(cached));
         }
-
-        if (attempt >= 240) {  // 240 × 250ms = 60s give-up
-            sgpt_log(@"           [retry] gave up after 60s, NSApp never ready");
-            return;
-        }
-
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)),
-                       dispatch_get_main_queue(), ^{
-            sgpt_retry_show_overlay(attempt + 1);
-        });
     }
+    return cached;
 }
+
+// =============================================================================
+//  Hooked kill functions
+// =============================================================================
+
+/// my_kill — replacement for kill(2).  When the target PID belongs to
+/// one of our processes AND the signal is fatal (SIGTERM, SIGKILL),
+/// we return success without actually delivering.  Non-fatal signals
+/// (SIGCONT, SIGUSR1, etc.) are passed through.
+static int my_kill(pid_t pid, int sig) {
+    if (pid > 0 && pid_is_ours(pid)) {
+        // Log only when the host is trying to terminate us.  Skip
+        // log spam for SIGCONT / SIGCHLD that we'd let through anyway.
+        if (sig == SIGKILL || sig == SIGTERM || sig == SIGQUIT || sig == SIGINT) {
+            char victim_path[PROC_PIDPATHINFO_MAXSIZE];
+            resolve_pid_path(pid, victim_path, sizeof(victim_path));
+            sgpt_logf("[%ld] INTERCEPTED kill(pid=%d, sig=%d) from host=%s victim=%s — returning 0",
+                      (long)time(NULL), pid, sig, host_path(), victim_path);
+            return 0;  // lie about success — victim keeps running
+        }
+    }
+    return kill(pid, sig);
+}
+DYLD_INTERPOSE(my_kill, kill);
+
+/// my_killpg — replacement for killpg(2).  Process-group kills are
+/// rarer but LDB might use them.  Same logic: if any process in the
+/// group is ours, refuse.
+///
+/// We don't enumerate the group — we just always allow killpg, EXCEPT
+/// when the group equals our PID (process group leader case).
+static int my_killpg(int pgrp, int sig) {
+    // pgrp can equal a PID when the process is its own group leader.
+    if (pgrp > 0 && pid_is_ours((pid_t)pgrp)) {
+        if (sig == SIGKILL || sig == SIGTERM || sig == SIGQUIT || sig == SIGINT) {
+            sgpt_logf("[%ld] INTERCEPTED killpg(pgrp=%d, sig=%d) — returning 0",
+                      (long)time(NULL), pgrp, sig);
+            return 0;
+        }
+    }
+    return killpg(pgrp, sig);
+}
+DYLD_INTERPOSE(my_killpg, killpg);
+
+// =============================================================================
+//  Constructor — log injection + announce hooks
+// =============================================================================
 
 __attribute__((constructor))
-static void screengpt_dylib_load(void) {
+static void screengpt_shield_load(void) {
     @autoreleasepool {
-        sgpt_log(sgpt_describe_host());
+        NSBundle *bundle = [NSBundle mainBundle];
+        NSString *bundleID = [bundle bundleIdentifier] ?: @"(none)";
+        const char *target = getenv("SGPT_TARGET");
 
-        if (!sgpt_should_activate_in_this_process()) {
-            sgpt_log(@"           → not target, exiting constructor cleanly");
-            return;
-        }
-        sgpt_log(@"           → TARGET MATCH, scheduling overlay setup (poll-based)");
-
-        // Schedule on main queue.  First tick runs as soon as the run
-        // loop is processing dispatch events.
-        dispatch_async(dispatch_get_main_queue(), ^{
-            sgpt_retry_show_overlay(0);
-        });
+        sgpt_logf("[%ld] LOADED  pid=%d  bundleID=%s  exe=%s  SGPT_TARGET=%s  → kill-shield active",
+                  (long)time(NULL),
+                  getpid(),
+                  [bundleID UTF8String],
+                  host_path(),
+                  target ? target : "(unset)");
     }
 }

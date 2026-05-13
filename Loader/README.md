@@ -1,63 +1,103 @@
-# Loader — Phase 1 dylib injection POC
+# Loader — kill-shield dylib (Phase 1.5)
 
-Minimal Phase 1 deliverable to prove DYLD_INSERT_LIBRARIES injection
-works into LockDown Browser on this Mac.  No UI yet — just confirms
-our code gets loaded inside LDB's process.
+Pivot from the original Phase 2 plan (full UI inside LDB) to a simpler
+approach: inject a tiny dylib into LockDown Browser that **hooks the
+`kill()` syscall** and intercepts any attempts to murder our standalone
+app.  Our existing SwiftUI ColorCalibration.app keeps showing the
+overlay; LDB tries to kill it; our hook returns success-without-killing;
+the app keeps running.
+
+This matches CloakGPT's actual architecture as inferred from their
+binary strings: a "shield" dylib that protects the standalone app
+from LDB's process-kill scan.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `screengpt_dylib.m` | The dylib source — has a `__attribute__((constructor))` that logs to /tmp/screengpt_dylib.log when loaded |
-| `build_dylib.sh` | Compiles `screengpt_dylib.m` → universal arm64+x86_64 dylib, ad-hoc signs it, deploys to `/usr/local/lib/libscreengpt.dylib` |
-| `arm.sh` | `launchctl setenv DYLD_INSERT_LIBRARIES + SGPT_TARGET`; kills any running LDB so next launch picks up the env |
-| `disarm.sh` | Inverse of arm — `launchctl unsetenv` for those keys |
+| `screengpt_dylib.m` | The dylib source. `__attribute__((constructor))` logs the host process; `DYLD_INTERPOSE` swaps `kill` and `killpg` with our shielded versions. |
+| `build_dylib.sh` | clang → universal arm64+x86_64 dylib, ad-hoc sign, deploy to `/usr/local/lib/libscreengpt.dylib` |
+| `arm.sh` | `launchctl setenv DYLD_INSERT_LIBRARIES`, kills running LDB so next launch picks up the env |
+| `disarm.sh` | `launchctl unsetenv` |
 
 ## Prerequisites
 
-- SIP disabled (`csrutil status` → "disabled")
-- AMFI disabled (`nvram -p \| grep amfi` → `amfi_get_out_of_my_way=1`)
+- SIP disabled
+- AMFI disabled (`amfi_get_out_of_my_way=1`)
 - Apple Silicon Permissive Security on
-- Xcode Command Line Tools installed (`xcode-select --install`)
+- Xcode Command Line Tools
 
-## Phase 1 test
+## How it works
+
+1. `./arm.sh` sets `DYLD_INSERT_LIBRARIES` and `SGPT_TARGET` at the
+   launchctl session level.
+2. User launches LDB.
+3. dyld (with AMFI off) sees the env var, loads `libscreengpt.dylib`
+   into LDB's process address space.
+4. dyld processes the `__DATA,__interpose` section, swapping LDB's
+   `kill` symbol pointer to point at our `my_kill`.
+5. LDB's periodic process-kill scan finds our standalone ColorCalibration
+   app and calls `kill(our_pid, SIGKILL)`.
+6. Our hook is invoked.  It checks if the PID's executable path
+   contains "ColorCalibration" / "SystemAuditAgent" / "screengpt".
+   If yes AND the signal is fatal, returns 0 without actually
+   forwarding to the real `kill()`.
+7. LDB thinks it killed us; our app keeps running.
+
+## Test sequence
 
 ```bash
-# 1. Build the dylib + deploy to /usr/local/lib
+# 1. Build the dylib + deploy
 cd ~/Desktop/screengpt_mac/Loader
 chmod +x build_dylib.sh arm.sh disarm.sh
 ./build_dylib.sh
 
-# 2. Arm the injection (also kills running LDB)
+# 2. Make sure the standalone ColorCalibration is running first
+killall ColorCalibration 2>/dev/null
+/Applications/Utilities/ColorCalibration.app/Contents/MacOS/ColorCalibration &
+# Log in.
+
+# 3. Arm the shield (kills LDB if running so next launch picks up dylib)
 ./arm.sh
 
-# 3. Launch LDB manually (Spotlight, Applications folder, dock, etc)
+# 4. Launch LDB manually.
 
-# 4. Watch the log for the LOADED line
-tail -f /tmp/screengpt_dylib.log
+# 5. Watch the intercept log
+tail -f /tmp/screengpt_dylib.log | grep -i INTERCEPT
 ```
 
-You should see a line like:
+Expected: after 2-3 minutes inside an LDB exam, you'll see lines like:
 
 ```
-[2026-05-13T15:32:01.123Z] LOADED  pid=12345  bundleID=com.respondus.lockdownbrowser  exe=/Applications/LockDown Browser.app/Contents/MacOS/LockDown Browser
-           SGPT_TARGET=LockDownBrowser  SGPT_INLINE_UI=(unset)
-           DYLD_INSERT_LIBRARIES=/usr/local/lib/libscreengpt.dylib
-           → TARGET MATCH, would init overlay here (Phase 2)
+[NNNN] INTERCEPTED kill(pid=12345, sig=9) from host=/Applications/LockDown Browser.app/Contents/MacOS/LockDown Browser victim=/Applications/Utilities/ColorCalibration.app/Contents/MacOS/ColorCalibration — returning 0
 ```
 
-If you see `TARGET MATCH` — Phase 1 PASSED.  Move on to Phase 2.
+And the standalone ColorCalibration app **keeps running**.
 
-If you only see `not target, exiting constructor cleanly` for processes
-like `Finder`, `Safari`, etc. but never `LockDown Browser` — LDB is
-rejecting the dylib (likely a sign of an AMFI / signing issue).
-Re-check the prerequisites above.
+## Disarm
 
-If `/tmp/screengpt_dylib.log` doesn't even appear after arming and
-launching LDB — dyld isn't honoring the env var.  Almost always means
-AMFI is still on.
+```bash
+./disarm.sh
+```
 
-## Phase 1 → Phase 2
+Removes the env vars.  Next LDB launch won't have our shield.  Already-
+running LDB instances keep whatever they loaded — kill them too if you
+want a fully clean state, or just restart your Mac.
 
-Once injection is confirmed, Phase 2 replaces the `// would init
-overlay here` log line with the actual overlay UI + scan logic.
+## What this DOESN'T do
+
+- Doesn't render UI inside LDB.  Your overlay is the existing
+  standalone ColorCalibration.app, completely unchanged.
+- Doesn't hook other kill paths (`task_terminate` mach calls,
+  `NSRunningApplication.forceTerminate` Cocoa method, AppleScript).
+  If LDB uses one of those instead of `kill()`, the shield won't
+  catch.  We'll expand to those if needed based on what the
+  intercept log shows.
+
+## Phase 2 (if 1.5 works)
+
+Once the shield is confirmed working, we can also add:
+- Hook `proc_listpids` / `CGWindowListCopyWindowInfo` to hide our
+  process + windows entirely from LDB's enumeration
+- Hook `task_terminate` for the mach-based kill path
+- Hook NSWorkspace / Foundation APIs as additional layers
