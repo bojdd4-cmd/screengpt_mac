@@ -148,15 +148,31 @@ struct PlaceholderPanelView: View {
         .frame(height: 26)
     }
 
+    /// Brand wordmark + invisible drag-handle behind it.  Clicks on the
+    /// "ScreenGPT" text pass through (allowsHitTesting=false) to a hidden
+    /// NSView that returns `mouseDownCanMoveWindow=true` — macOS then drags
+    /// the panel natively (smooth, no SwiftUI gesture conflict).
     private var wordmark: some View {
-        HStack(spacing: 0) {
-            ForEach(Array("ScreenGPT"), id: \.self) { ch in
-                Text(String(ch))
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundColor(primaryText.opacity(0.92))
+        ZStack {
+            DragHandleView()
+            HStack(spacing: 0) {
+                ForEach(Array("ScreenGPT"), id: \.self) { ch in
+                    Text(String(ch))
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundColor(primaryText.opacity(0.92))
+                }
             }
+            .allowsHitTesting(false)
         }
-        .allowsHitTesting(false)
+        .frame(width: 120, height: 22)
+    }
+
+    /// Multiply a base color's opacity by this factor in clear mode so
+    /// button fills become near-transparent but still visible enough to
+    /// outline the control.  Other themes leave the base color as-is.
+    private func themedFill(_ base: Color, baseOpacity: Double) -> Color {
+        let factor: Double = isClear ? 0.25 : 1.0
+        return base.opacity(baseOpacity * factor)
     }
 
     private var responseLenSymbol: String {
@@ -186,9 +202,15 @@ struct PlaceholderPanelView: View {
                             help: String,
                             isDestructive: Bool = false,
                             active: Bool = false) -> some View {
-        let tint = isDestructive ? Color.red.opacity(0.75) : iconTint
-        let fill = isDestructive ? Color.red.opacity(0.10) :
-                   (active ? Color.blue.opacity(0.30) : subtleFill)
+        let tint = isDestructive ? Color.red.opacity(isClear ? 0.55 : 0.75) : iconTint
+        let fill: Color
+        if isDestructive {
+            fill = themedFill(.red, baseOpacity: 0.10)
+        } else if active {
+            fill = themedFill(.blue, baseOpacity: 0.30)
+        } else {
+            fill = subtleFill
+        }
         return Button(action: action) {
             ZStack {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -222,10 +244,10 @@ struct PlaceholderPanelView: View {
         Button(action: { model.onCaptureClicked() }) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.blue.opacity(0.30))
+                    .fill(themedFill(.blue, baseOpacity: 0.30))
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                            .stroke(Color.white.opacity(isClear ? 0.10 : 0.15), lineWidth: 1)
                     )
                 HStack(spacing: 6) {
                     Image(systemName: model.isScanning ? "hourglass" : "viewfinder")
@@ -245,10 +267,10 @@ struct PlaceholderPanelView: View {
         Button(action: { model.onTogglePillTapped() }) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.purple.opacity(0.32))
+                    .fill(themedFill(.purple, baseOpacity: 0.32))
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                            .stroke(Color.white.opacity(isClear ? 0.10 : 0.15), lineWidth: 1)
                     )
                 HStack(spacing: 4) {
                     Text(model.currentProvider.displayName)
@@ -268,12 +290,11 @@ struct PlaceholderPanelView: View {
         Button(action: { model.onToggleBrowser() }) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(model.isBrowserMode
-                          ? Color.teal.opacity(0.55)
-                          : Color.teal.opacity(0.32))
+                    .fill(themedFill(.teal,
+                                     baseOpacity: model.isBrowserMode ? 0.55 : 0.32))
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                            .stroke(Color.white.opacity(isClear ? 0.10 : 0.15), lineWidth: 1)
                     )
                 HStack(spacing: 4) {
                     Image(systemName: model.isBrowserMode ? "globe.americas.fill" : "globe")
@@ -606,14 +627,13 @@ struct ResizeGrip: View {
 
     var body: some View {
         ZStack {
-            // Visual indicator — diagonal hash lines + faint background pad
-            // so the user can see "this is a draggable corner".
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(hovering ? Color.blue.opacity(0.20) : Color.clear)
-                .frame(width: 28, height: 28)
+            // Visual chip in the corner
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(hovering ? Color.blue.opacity(0.25) : Color.clear)
+                .frame(width: 36, height: 36)
             Canvas { ctx, size in
                 let s = size.width
-                let stroke = StrokeStyle(lineWidth: 1.6, lineCap: .round)
+                let stroke = StrokeStyle(lineWidth: 1.8, lineCap: .round)
                 for offset in [0.15, 0.45, 0.75] {
                     var path = Path()
                     path.move(to:    CGPoint(x: s - 2,        y: s * offset + 4))
@@ -621,13 +641,14 @@ struct ResizeGrip: View {
                     ctx.stroke(path, with: .color(tint), style: stroke)
                 }
             }
-            .frame(width: 22, height: 22)
+            .frame(width: 28, height: 28)
         }
-        // Hit area is generous — 40×40 even though the visual is ~28×28.
-        .frame(width: 40, height: 40)
+        // Generous 60×60 hit area so the user doesn't have to pixel-hunt
+        // the bottom-right corner.
+        .frame(width: 60, height: 60)
         .contentShape(Rectangle())
         .gesture(
-            DragGesture(coordinateSpace: .global)
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
                 .onChanged { value in
                     guard let win = currentPanelWindow() else { return }
                     if startFrame == nil { startFrame = win.frame }
@@ -652,4 +673,20 @@ struct ResizeGrip: View {
     private func currentPanelWindow() -> NSWindow? {
         NSApp.windows.first { $0.contentViewController is NSHostingController<PlaceholderPanelView> }
     }
+}
+
+// =============================================================================
+//  DragHandleView — NSView that lets macOS drag the panel natively when the
+//  brand wordmark is clicked.  mouseDownCanMoveWindow=true tells AppKit
+//  "treat clicks on this NSView like a window-background click", so the
+//  user can drag the overlay around by grabbing the ScreenGPT label.
+// =============================================================================
+
+struct DragHandleView: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { _DragNSView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private final class _DragNSView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
 }

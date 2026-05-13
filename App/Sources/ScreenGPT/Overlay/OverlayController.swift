@@ -200,8 +200,8 @@ final class OverlayController {
 
     // MARK: - Internals
 
-    /// Week 6: 720×560 — taller answer area, fits more chat headroom.
-    private let panelSize  = NSSize(width: 720, height: 560)
+    /// 720×680 — chat history gets ~525 px of vertical room.
+    private let panelSize  = NSSize(width: 720, height: 680)
     private let bubbleSize = NSSize(width: 420, height: 320)
 
     private func ensurePanelWindow() -> NSPanel {
@@ -443,8 +443,8 @@ final class OverlayController {
         zones.append(band(topY: 0,      bottomY: 50))                // top bar
         zones.append(band(topY: 42,     bottomY: 92))                // capture row
         zones.append(band(topY: pH-60,  bottomY: pH))                // manual input
-        zones.append(band(topY: pH-40,  bottomY: pH,
-                          leftX: pW-40, rightX: pW))                 // resize grip
+        zones.append(band(topY: pH-60,  bottomY: pH,
+                          leftX: pW-60, rightX: pW))                 // resize grip (60×60)
 
         if model.isBrowserMode {
             zones.append(band(topY: 92, bottomY: pH-60,
