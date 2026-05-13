@@ -1,4 +1,6 @@
-"App/build/" 
-"Brain/build/" 
-"**/__pycache__/" 
-".DS_Store" 
+App/build/
+App/.build/
+Brain/build/
+__pycache__/
+.DS_Store
+*.xcodeproj/xcuserdata/
