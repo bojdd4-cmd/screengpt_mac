@@ -247,7 +247,7 @@ final class OverlayController {
         // the initialiser interpreted contentRect differently for our
         // styleMask combination.
         panel.setContentSize(size)
-        NSLog("[ScreenGPT] panel created size=\(size.width)×\(size.height)")
+        Log.write("panel created size=\(Int(size.width))×\(Int(size.height)) frame=\(panel.frame)")
 
         // Float above all other windows in the app — but the real "above
         // LDB" magic happens via window.level below.
