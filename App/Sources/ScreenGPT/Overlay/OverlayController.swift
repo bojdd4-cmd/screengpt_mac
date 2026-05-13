@@ -250,6 +250,7 @@ final class OverlayController {
         panel.hidesOnDeactivate = false       // stay visible when LDB activates
         panel.worksWhenModal = true           // visible even over modal sheets
 
+        applyOneTimeConfig(panel)
         applyProtection(panel)
 
         panel.isOpaque         = false
@@ -268,49 +269,36 @@ final class OverlayController {
         return panel
     }
 
-    /// Apply the runtime-mutable protection flags.  Called once at window
-    /// creation AND every 250 ms by OverlayDefender — LDB may try to mutate
-    /// these from another process via private APIs; re-applying is cheap
-    /// and idempotent.
+    /// Re-applied every 250 ms by OverlayDefender — ONLY for things LDB
+    /// might tamper with via private APIs.  Click-through state
+    /// (`ignoresMouseEvents`) is owned by InteractionZoneTracker and MUST
+    /// NOT be touched here, or the tracker's per-tick decisions get
+    /// clobbered the moment the defender runs again.
     private func applyProtection(_ panel: NSPanel) {
-        // Window level — currently `.statusBar` (25) so we blend in
-        // with menu-bar utilities.
-        panel.level = OverlayDefender.assertedLevel
-
-        // INVISIBLE TO SCREEN CAPTURE — the macOS equivalent of
-        // WDA_EXCLUDEFROMCAPTURE.  Without this, screen recording tools
-        // (including LDB's own monitoring) would see the overlay.
+        panel.level       = OverlayDefender.assertedLevel
         panel.sharingType = .none
-
-        // Week 4 — panel is now INTERACTIVE (was click-through in week 2/3).
-        // Users click icons in the top bar, click the Capture button, etc.
-        // The dwell-hover path STILL works (DwellMonitor polls
-        // NSEvent.mouseLocation globally, no window event listener needed),
-        // so users get both activation modes without a toggle.
-        //
-        // Clicks OUTSIDE the panel area pass through to LDB beneath because
-        // no window covers those pixels.
-        panel.ignoresMouseEvents = false
-
-        // Week 6: panel boots in click-through mode.  InteractionZoneTracker
-        // flips `ignoresMouseEvents` on/off 50×/sec based on cursor position
-        // so clicks pass through to LDB EXCEPT when cursor is over our
-        // chrome (top bar, capture row, manual input, resize grip, browser
-        // when open).
-        panel.ignoresMouseEvents = true
-        // Drag is handled via the wordmark zone — when cursor is in the
-        // brand area, interaction is enabled, the drag gesture catches.
-        // No background drag needed; clicks on chat area go through.
-        panel.isMovableByWindowBackground = true
-        panel.isMovable = true
-
-        // Survive every Space transition LDB might trigger.
         panel.collectionBehavior = [
             .canJoinAllSpaces,
             .stationary,
             .fullScreenAuxiliary,
             .ignoresCycle,
         ]
+    }
+
+    /// One-time panel configuration.  Set at construction in
+    /// makeOverlayPanel; defender never re-applies these properties.
+    private func applyOneTimeConfig(_ panel: NSPanel) {
+        // Boot in click-through.  InteractionZoneTracker takes ownership
+        // of this property from here on, flipping it 50× per second based
+        // on cursor position.
+        panel.ignoresMouseEvents = true
+        panel.isMovable = true
+        // Background-drag is off — the InteractionZoneTracker makes the
+        // top bar (incl. brand area) interactive, and the brand text has
+        // a drag handle in the SwiftUI view tree.  Allowing
+        // background-drag at the same time creates conflicts with the
+        // SwiftUI ScrollView in the chat history.
+        panel.isMovableByWindowBackground = false
     }
 
     /// Apply the current TransparencyMode to both overlay windows.
@@ -423,82 +411,49 @@ final class OverlayController {
     }
 
     /// Compute the current interactive-zone rectangles in SCREEN coords.
-    /// AppDelegate hands this to InteractionZoneTracker so the tracker can
-    /// hit-test cursor position against the live UI layout.
+    /// Zones are SwiftUI-coordinate y-bands across the panel's width,
+    /// converted to screen coords via the window's bottom-up origin.
     ///
-    /// Zones (panel-local):
-    ///   • Top bar row              y=0..26
-    ///   • Capture row              y=34..70
-    ///   • Manual input bar         y=panelH-44..panelH-6
-    ///   • Resize grip              y=panelH-24..panelH (bottom-right corner)
-    ///   • Browser area (if on)     covers the answer area
-    ///   • Provider dropdown rows (if expanded)
+    /// SwiftUI layout (top-down, generous padding to catch fast clicks):
+    ///   • y=0..50      top bar (includes 10pt outer + 26pt bar + slack)
+    ///   • y=42..92     capture row (with overlap into top-bar band)
+    ///   • y=panelH-60..panelH   manual input bar (44pt + slack)
+    ///   • y=panelH-40..panelH, x=panelW-40..panelW   resize grip
+    ///   • y=92..panelH-60       browser area (when browser toggle on)
+    ///   • y=92..240, x=140..270 provider dropdown (when expanded)
     func interactionZones() -> [NSRect] {
         guard let win = panelWindow, win.isVisible else { return [] }
         let f = win.frame
         let pH = f.height
         let pW = f.width
 
-        // SwiftUI coords are top-down inside the panel; macOS NSWindow.frame
-        // is bottom-up.  So "top bar y=0..26 (top-down)" is actually
-        // "y=pH-26..pH (bottom-up)" relative to panel origin.
+        /// Convert a SwiftUI-coord band into a screen-coord NSRect.
+        /// `topY` and `bottomY` are SwiftUI y values (0=top).
+        func band(topY: CGFloat, bottomY: CGFloat,
+                  leftX: CGFloat = 0, rightX: CGFloat? = nil) -> NSRect {
+            let x = f.origin.x + leftX
+            let w = (rightX ?? pW) - leftX
+            // SwiftUI top y → bottom-up: f.origin.y + (pH - topY) - height
+            let y = f.origin.y + (pH - bottomY)
+            let h = bottomY - topY
+            return NSRect(x: x, y: y, width: w, height: h)
+        }
 
         var zones: [NSRect] = []
+        zones.append(band(topY: 0,      bottomY: 50))                // top bar
+        zones.append(band(topY: 42,     bottomY: 92))                // capture row
+        zones.append(band(topY: pH-60,  bottomY: pH))                // manual input
+        zones.append(band(topY: pH-40,  bottomY: pH,
+                          leftX: pW-40, rightX: pW))                 // resize grip
 
-        // Top bar (whole row — includes brand drag area)
-        zones.append(NSRect(
-            x: f.origin.x,
-            y: f.origin.y + pH - 26 - 10,    // +10 for vertical padding inside panel
-            width: pW,
-            height: 26 + 10
-        ))
-
-        // Capture row
-        zones.append(NSRect(
-            x: f.origin.x + 12,
-            y: f.origin.y + pH - 26 - 8 - 36 - 10,
-            width: pW - 24,
-            height: 36
-        ))
-
-        // Manual input bar (bottom)
-        zones.append(NSRect(
-            x: f.origin.x + 12,
-            y: f.origin.y + 6,
-            width: pW - 24,
-            height: 44
-        ))
-
-        // Resize grip (bottom-right, generous hit area)
-        zones.append(NSRect(
-            x: f.origin.x + pW - 40,
-            y: f.origin.y,
-            width: 40,
-            height: 40
-        ))
-
-        // Browser area covers the middle band when toggle is on
         if model.isBrowserMode {
-            let topY = f.origin.y + 6 + 44 + 4          // above input bar
-            let botY = f.origin.y + pH - 70 - 10 - 8    // below capture row
-            zones.append(NSRect(
-                x: f.origin.x + 12,
-                y: topY,
-                width: pW - 24,
-                height: botY - topY
-            ))
+            zones.append(band(topY: 92, bottomY: pH-60,
+                              leftX: 8, rightX: pW-8))               // browser body
         }
-
-        // Provider dropdown rows (when expanded) — overlay over capture row
         if model.providerDropdownExpanded {
-            zones.append(NSRect(
-                x: f.origin.x + 140,
-                y: f.origin.y + pH - 76 - 4 - (28 * 4) - 4,
-                width: 130,
-                height: 28 * 4 + 8
-            ))
+            zones.append(band(topY: 92, bottomY: 240,
+                              leftX: 130, rightX: 280))              // dropdown
         }
-
         return zones
     }
 

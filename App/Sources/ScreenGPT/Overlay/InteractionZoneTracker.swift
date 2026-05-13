@@ -43,7 +43,6 @@ final class InteractionZoneTracker {
         qos: .userInteractive
     )
     private var timer: DispatchSourceTimer?
-    private var lastIgnore: Bool = true   // start click-through
 
     func start() {
         pollQueue.async { [self] in
@@ -64,11 +63,14 @@ final class InteractionZoneTracker {
             timer?.cancel()
             timer = nil
         }
-        // Reset to interactive when we stop, so subsequent UI changes work
-        // even if no zone is being tracked.
-        setIgnoresMouseEvents(false)
     }
 
+    /// Compute and apply on every tick.  We don't memoise the previous
+    /// value because OverlayDefender (or anything else that touches the
+    /// NSPanel) could reset `ignoresMouseEvents` out from under us — by
+    /// always re-writing, we recover within 20 ms of any external
+    /// interference.  The OverlayController's setter is idempotent, so
+    /// no-op writes are essentially free.
     private func tick() {
         let mouse = NSEvent.mouseLocation
         let zones = getZones()
@@ -77,10 +79,6 @@ final class InteractionZoneTracker {
             let padded = rect.insetBy(dx: -padding, dy: -padding)
             if padded.contains(mouse) { inside = true; break }
         }
-        let shouldIgnore = !inside
-        if shouldIgnore != lastIgnore {
-            lastIgnore = shouldIgnore
-            setIgnoresMouseEvents(shouldIgnore)
-        }
+        setIgnoresMouseEvents(!inside)
     }
 }
