@@ -34,10 +34,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // ── Services ────────────────────────────────────────────────────────────
     let brain    = BrainBridge()
     let overlay  = OverlayController()
-    let dwell    = DwellMonitor()
     let capture  = CaptureService()
     let login    = LoginController()
     let hotkeys  = HotkeyManager()
+    let zones    = InteractionZoneTracker()
     lazy var settingsController: SettingsController = SettingsController(sharedModel: overlay.sharedModel)
     lazy var defender: OverlayDefender = OverlayDefender(controller: overlay)
 
@@ -78,37 +78,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         defender.start()
         log("OverlayDefender started.")
 
-        // ── Dwell → action handler ──────────────────────────────────────────
-        dwell.onActivate = { [weak self] buttonID in
-            self?.handleDwellActivation(buttonID)
+        // ── Interaction zone tracker (selective click-through) ──────────────
+        // The panel is click-through by default; this 50Hz poll flips
+        // `ignoresMouseEvents` to false ONLY when the cursor is over one of
+        // our interactive zones (top bar, capture row, manual input,
+        // resize grip, browser area).  Result: clicks outside our chrome
+        // pass through to LDB beneath, but our controls still work.
+        zones.getZones = { [weak self] in
+            self?.overlay.interactionZones() ?? []
         }
-        dwell.onProgress = { [weak self] buttonID, progress in
-            self?.overlay.updateHoverProgress(buttonID: buttonID, progress: progress)
+        zones.setIgnoresMouseEvents = { [weak self] ignores in
+            self?.overlay.setIgnoresMouseEvents(ignores)
         }
 
         // ── SwiftUI click closures ──────────────────────────────────────────
         overlay.wireActions(.init(
             onSettings:           { [weak self] in self?.settingsController.show() },
-            onCycleActivation:    { [weak self] in self?.cycleActivationMode() },
+            onCycleResponseLen:   { [weak self] in self?.cycleResponseLength() },
             onToggleContext:      { [weak self] in self?.toggleContext() },
             onScreenshot:         { [weak self] in Task { await self?.handleTopBarScreenshot() } },
-            onToggleTheme:        { [weak self] in self?.toggleTheme() },
+            onToggleTheme:        { [weak self] in self?.cycleTheme() },
             onCycleTransparency:  { [weak self] in self?.cycleTransparency() },
+            onHide:               { [weak self] in self?.handleHide() },
             onClose:              { NSApp.terminate(nil) },
             onCaptureClicked:     { [weak self] in Task { await self?.runScan() } },
-            onTogglePillTapped:   { [weak self] in
-                self?.overlay.toggleProviderDropdown()
-                if let frame = self?.overlay.panelFrame {
-                    self?.dwell.setButtons(self?.makeButtons(for: frame) ?? [])
-                }
-            },
+            onTogglePillTapped:   { [weak self] in self?.overlay.toggleProviderDropdown() },
             onPickProvider:       { [weak self] p in self?.pickProvider(p) },
             onToggleBrowser:      { [weak self] in self?.toggleBrowserMode() },
             onSubmitManualAsk:    { [weak self] text in Task { await self?.runManualAsk(text) } },
             onClearAttachedImage: { [weak self] in
                 self?.overlay.setAttachedImage(thumb: nil, b64: nil)
             },
-            onSettingsChangedActivation:   { [weak self] m in self?.applyActivationMode(m) },
             onSettingsChangedResponse:     { [weak self] r in self?.applyResponseMode(r) },
             onSettingsChangedTheme:        { [weak self] t in self?.applyTheme(t) },
             onSettingsChangedTransparency: { [weak self] t in self?.applyTransparency(t) },
@@ -169,26 +169,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Otherwise: login window shown when brain emits `ready`.
     }
 
-    /// Bring up the overlay + sync dwell state.
+    /// Bring up the overlay + start the cursor-zone tracker.
     private func startOverlaySession() {
         overlay.setPanelVisible(true)
         if settings.bubbleEnabled {
             overlay.setBubbleVisible(true)
         }
-        updateDwellState()
+        zones.start()
     }
 
-    /// Single source of truth for "should the dwell poller be running?".
-    /// Call whenever panel visibility or activation mode changes.
-    private func updateDwellState() {
-        let shouldRun = overlay.isPanelVisible
-            && overlay.modelActivationMode.hoverEnabled
-        if shouldRun {
-            dwell.start()
-            dwell.setButtons(makeButtons(for: overlay.panelFrame))
-        } else {
-            dwell.stop()
-        }
+    private func handleHide() {
+        log("Hide button clicked")
+        overlay.setPanelVisible(false)
+        overlay.setBubbleVisible(false)
+        zones.stop()
     }
 
     private func handleToggleHotkey() {
@@ -198,9 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if overlay.isPanelVisible {
-            overlay.setPanelVisible(false)
-            overlay.setBubbleVisible(false)
-            updateDwellState()
+            handleHide()
         } else {
             startOverlaySession()
         }
@@ -208,8 +200,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ── Top-bar action handlers ─────────────────────────────────────────────
 
-    private func toggleTheme() {
-        let next: ThemeMode = (overlay.modelThemeMode == .dark) ? .light : .dark
+    /// Cycle Dark → Light → Clear → Dark.
+    private func cycleTheme() {
+        let cur = overlay.modelThemeMode
+        let next = ThemeMode(rawValue: (cur.rawValue + 1) % 3) ?? .dark
         applyTheme(next)
     }
 
@@ -219,10 +213,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyTransparency(next)
     }
 
-    private func cycleActivationMode() {
-        let cur = overlay.modelActivationMode
-        let next = ActivationMode(rawValue: (cur.rawValue + 1) % 3) ?? .click
-        applyActivationMode(next)
+    /// Cycle Minimal → Short → Paragraphs → Minimal.  Replaces the old
+    /// activation-mode cycler in the top bar.
+    private func cycleResponseLength() {
+        let cur = overlay.modelResponseMode
+        let next = (cur + 1) % 3
+        applyResponseMode(next)
     }
 
     private func toggleContext() {
@@ -282,14 +278,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("transparency → \(mode.displayName)")
     }
 
-    private func applyActivationMode(_ mode: ActivationMode) {
-        overlay.setActivationMode(mode)
-        settings.activationMode = mode.rawValue
-        brain.send(["cmd": "set_setting", "key": "activation_mode", "value": mode.rawValue])
-        updateDwellState()
-        log("activation → \(mode.displayName)")
-    }
-
     private func applyResponseMode(_ raw: Int) {
         let clamped = max(0, min(2, raw))
         overlay.setResponseMode(clamped)
@@ -302,7 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("screen locked / power off — hiding overlay")
         overlay.setPanelVisible(false)
         overlay.setBubbleVisible(false)
-        updateDwellState()
+        zones.stop()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -346,14 +334,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let trans = TransparencyMode(rawValue: settings.transparencyMode) {
                 overlay.applyTransparency(trans)
             }
-            if let act = ActivationMode(rawValue: settings.activationMode) {
-                overlay.setActivationMode(act)
-            }
-            // Apply dwell state now that activation mode is loaded from disk.
-            updateDwellState()
+            // Activation mode is forced to .click in week 6 — hover is gone.
+            overlay.setActivationMode(.click)
             log("settings loaded: provider=\(settings.aiProvider.rawValue) "
-                + "act=\(settings.activationMode) ctx=\(settings.ctxOn) "
-                + "theme=\(settings.themeMode) resp=\(settings.respMode)")
+                + "ctx=\(settings.ctxOn) theme=\(settings.themeMode) "
+                + "resp=\(settings.respMode)")
 
         case .settingValue(_, _):
             brain.send(["cmd": "get_all_settings"])
@@ -416,36 +401,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // ── Dwell activation → behaviour ────────────────────────────────────────
-
-    private func handleDwellActivation(_ buttonID: ButtonID) {
-        log("dwell activated: \(buttonID)")
-        switch buttonID {
-
-        case .capture:
-            Task { await runScan() }
-
-        case .providerPill:
-            overlay.toggleProviderDropdown()
-            dwell.setButtons(makeButtons(for: overlay.panelFrame))
-
-        case .providerOpt0: pickProvider(.grok)
-        case .providerOpt1: pickProvider(.openai)
-        case .providerOpt2: pickProvider(.gemini)
-        case .providerOpt3: pickProvider(.claude)
-
-        case .scrollUp:    overlay.scrollAnswer(by: -40)
-        case .scrollDown:  overlay.scrollAnswer(by:  40)
-
-        // Dead branches — old UI buttons whose rects were removed in week 5.
-        // Kept for exhaustiveness; never fire because their rects aren't
-        // registered with the dwell monitor.
-        case .hide, .modeMin, .modeCon, .modeDet, .context,
-             .invisible, .bubble, .tab:
-            break
-        }
-    }
-
     private func pickProvider(_ p: Provider) {
         settings.aiProvider = p
         brain.send(["cmd": "set_setting", "key": "ai_provider", "value": p.rawValue])
@@ -455,7 +410,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.clearChat()
         lastScreenshotB64 = nil
         lastAnswerText    = nil
-        dwell.setButtons(makeButtons(for: overlay.panelFrame))
         log("provider → \(p.rawValue) (chat cleared)")
     }
 
@@ -538,29 +492,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
-
-    private func makeButtons(for panelFrame: NSRect) -> [DwellMonitor.Button] {
-        var out: [DwellMonitor.Button] = []
-        for (id, local) in ButtonRects.allButtons {
-            let screenRect = NSRect(
-                x: panelFrame.minX + local.minX,
-                y: panelFrame.minY + local.minY,
-                width: local.width, height: local.height
-            )
-            out.append(.init(id: id, rect: screenRect))
-        }
-        if overlay.isDropdownExpanded {
-            for (id, local) in ButtonRects.providerOptions {
-                let screenRect = NSRect(
-                    x: panelFrame.minX + local.minX,
-                    y: panelFrame.minY + local.minY,
-                    width: local.width, height: local.height
-                )
-                out.append(.init(id: id, rect: screenRect))
-            }
-        }
-        return out
-    }
 
     private func buildVersion() -> String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"

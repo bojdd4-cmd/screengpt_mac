@@ -2,20 +2,21 @@
 //  PlaceholderView.swift
 //  ScreenGPT
 //
-//  Week 5 overlay layout.
+//  Week 6 overlay layout.
 //
-//  Top bar (7 monochrome icons + brand drag area):
-//      [Brand]   [⚙ Settings] [⇄ Mode] [🔗 Context] [📷 Camera]
-//                [🌙 Theme]  [◐ Trans]                  [✕ Close]
+//  Top bar (8 monochrome icons + brand drag area):
+//      [Brand]  [⚙ Settings] [≡ Resp len] [🔗 Context] [📷 Camera]
+//               [🌙 Theme]   [◐ Trans]    [👁 Hide]    [✕ Quit]
 //
 //  Capture row:
 //      [Capture 120] [AI dropdown 130] [Web toggle 130]
 //
-//  Main area (toggleable):
-//      • Default → scrollable chat history + bottom text input
-//      • Browser mode → embedded WKWebView (same area)
+//  Main area: chat history OR embedded browser (toggle)
+//  Bottom: manual text input bar (always present)
+//  Bottom-right: bigger resize grip with generous hit area
 //
-//  Bottom-right has a resize grip.
+//  Clear theme: backdrops near-transparent but text + buttons readable.
+//  Rounder corners: 20pt radius.
 //
 
 import SwiftUI
@@ -50,10 +51,7 @@ struct PlaceholderPanelView: View {
                 Spacer()
                 HStack {
                     Spacer()
-                    ResizeGrip(tint: secondaryText.opacity(0.5))
-                        .frame(width: 14, height: 14)
-                        .padding(.trailing, 4)
-                        .padding(.bottom, 4)
+                    ResizeGrip(tint: secondaryText.opacity(0.6))
                 }
             }
         }
@@ -62,67 +60,88 @@ struct PlaceholderPanelView: View {
 
     // MARK: - Theme colours
 
+    private var isClear: Bool { model.themeMode == .clear }
+
     private var panelBackgroundColor: Color {
-        colorScheme == .dark
-            ? Color(red: 0.07, green: 0.05, blue: 0.12).opacity(0.95)
-            : Color(red: 0.95, green: 0.95, blue: 0.97).opacity(0.95)
+        switch model.themeMode {
+        case .dark:  return Color(red: 0.07, green: 0.05, blue: 0.12).opacity(0.95)
+        case .light: return Color(red: 0.95, green: 0.95, blue: 0.97).opacity(0.95)
+        case .clear: return Color.black.opacity(0.12)   // barely visible
+        }
     }
     private var panelBorderColor: Color {
-        colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.12)
+        switch model.themeMode {
+        case .dark:  return Color.white.opacity(0.10)
+        case .light: return Color.black.opacity(0.12)
+        case .clear: return Color.white.opacity(0.18)
+        }
     }
-    private var primaryText:   Color { colorScheme == .dark ? .white : .black }
-    private var secondaryText: Color { colorScheme == .dark ? .white.opacity(0.65) : .black.opacity(0.60) }
-    private var subtleFill:    Color { colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.05) }
-    private var iconTint:      Color { colorScheme == .dark ? Color.white.opacity(0.78) : Color.black.opacity(0.78) }
+    private var primaryText:   Color {
+        switch model.themeMode {
+        case .dark, .clear: return .white
+        case .light:        return .black
+        }
+    }
+    private var secondaryText: Color { primaryText.opacity(0.65) }
+    private var subtleFill:    Color {
+        switch model.themeMode {
+        case .dark:  return Color.white.opacity(0.06)
+        case .light: return Color.black.opacity(0.05)
+        case .clear: return Color.white.opacity(0.04)
+        }
+    }
+    private var iconTint: Color { primaryText.opacity(0.78) }
 
     // MARK: - Backdrop
 
     private var backdrop: some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
             .fill(panelBackgroundColor)
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .stroke(panelBorderColor, lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 8)
+            .shadow(color: .black.opacity(isClear ? 0.0 : 0.35), radius: 18, x: 0, y: 8)
     }
 
-    // MARK: - Top bar (7 icons)
+    // MARK: - Top bar (8 icons)
 
     private var topBar: some View {
         HStack(spacing: 4) {
             wordmark.padding(.leading, 12)
             Spacer(minLength: 4)
 
-            topBarIcon(symbol: "gearshape.fill",
-                       action: model.onSettings,
-                       help: "Settings")
+            topBarIcon("gearshape.fill",
+                       action: model.onSettings, help: "Settings")
 
-            topBarIcon(symbol: activationSymbol,
-                       action: model.onCycleActivation,
-                       help: "Activation: \(model.activationMode.displayName)",
-                       active: false)
+            topBarIcon(responseLenSymbol,
+                       action: model.onCycleResponseLen,
+                       help: "Length: \(responseLenLabel)")
 
-            topBarIcon(symbol: "link",
+            topBarIcon("link",
                        action: model.onToggleContext,
                        help: "Context: \(model.contextOn ? "On" : "Off")",
                        active: model.contextOn)
 
-            topBarIcon(symbol: "camera.fill",
+            topBarIcon("camera.fill",
                        action: model.onScreenshot,
-                       help: "Capture & copy to clipboard")
+                       help: "Screenshot to clipboard + attach")
 
-            topBarIcon(symbol: themeSymbol,
+            topBarIcon(themeSymbol,
                        action: model.onToggleTheme,
                        help: "Theme: \(model.themeMode.displayName)")
 
-            topBarIcon(symbol: transparencySymbol,
+            topBarIcon(transparencySymbol,
                        action: model.onCycleTransparency,
                        help: "Transparency: \(model.transparencyMode.displayName)")
 
-            topBarIcon(symbol: "xmark",
+            topBarIcon("eye.slash.fill",
+                       action: model.onHide,
+                       help: "Hide overlay (⌘⇧S to summon)")
+
+            topBarIcon("xmark",
                        action: model.onClose,
-                       help: "Quit",
+                       help: "Quit ScreenGPT",
                        isDestructive: true)
                 .padding(.trailing, 8)
         }
@@ -140,26 +159,29 @@ struct PlaceholderPanelView: View {
         .allowsHitTesting(false)
     }
 
-    private var activationSymbol: String {
-        switch model.activationMode {
-        case .click: return "cursorarrow.click.2"
-        case .hover: return "hand.point.up.left.fill"
-        case .both:  return "arrow.left.and.right.circle.fill"
+    private var responseLenSymbol: String {
+        switch model.responseMode {
+        case 0:  return "text.alignleft"
+        case 1:  return "text.justify"
+        default: return "text.justify.left"
         }
+    }
+    private var responseLenLabel: String {
+        ["Minimal", "Short", "Paragraphs"][min(max(model.responseMode, 0), 2)]
     }
 
     private var themeSymbol: String {
-        model.themeMode == .dark ? "moon.stars.fill" : "sun.max.fill"
+        switch model.themeMode {
+        case .dark:  return "moon.stars.fill"
+        case .light: return "sun.max.fill"
+        case .clear: return "eye.fill"
+        }
     }
-
     private var transparencySymbol: String {
         ["circle.fill", "circle.lefthalf.filled", "circle.dotted"][model.transparencyMode.rawValue]
     }
 
-    /// Compact monochrome icon button.  `active=true` adds a subtle filled
-    /// state so the user sees toggle status at a glance (Context icon uses
-    /// this).
-    private func topBarIcon(symbol: String,
+    private func topBarIcon(_ symbol: String,
                             action: @escaping () -> Void,
                             help: String,
                             isDestructive: Bool = false,
@@ -169,10 +191,10 @@ struct PlaceholderPanelView: View {
                    (active ? Color.blue.opacity(0.30) : subtleFill)
         return Button(action: action) {
             ZStack {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(fill)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
                             .stroke(tint.opacity(0.45), lineWidth: 0.7)
                     )
                 Image(systemName: symbol)
@@ -198,20 +220,13 @@ struct PlaceholderPanelView: View {
 
     private var captureButton: some View {
         Button(action: { model.onCaptureClicked() }) {
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.blue.opacity(0.22))
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.blue.opacity(0.30))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.white.opacity(0.15), lineWidth: 1)
                     )
-                if model.activationMode.hoverEnabled, model.hoverButton == .capture {
-                    GeometryReader { geo in
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.blue.opacity(0.55))
-                            .frame(width: geo.size.width * model.hoverProgress)
-                    }
-                }
                 HStack(spacing: 6) {
                     Image(systemName: model.isScanning ? "hourglass" : "viewfinder")
                         .font(.system(size: 13, weight: .semibold))
@@ -219,7 +234,6 @@ struct PlaceholderPanelView: View {
                         .font(.system(size: 12, weight: .semibold))
                 }
                 .foregroundColor(.white)
-                .padding(.horizontal, 10)
             }
             .frame(width: 120, height: 36)
         }
@@ -230,19 +244,12 @@ struct PlaceholderPanelView: View {
     private var providerPill: some View {
         Button(action: { model.onTogglePillTapped() }) {
             ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.purple.opacity(0.28))
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.purple.opacity(0.32))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.white.opacity(0.15), lineWidth: 1)
                     )
-                if model.activationMode.hoverEnabled, model.hoverButton == .providerPill {
-                    GeometryReader { geo in
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.purple.opacity(0.55))
-                            .frame(width: geo.size.width * model.hoverProgress)
-                    }
-                }
                 HStack(spacing: 4) {
                     Text(model.currentProvider.displayName)
                         .font(.system(size: 12, weight: .semibold))
@@ -257,17 +264,16 @@ struct PlaceholderPanelView: View {
         .buttonStyle(.plain)
     }
 
-    /// Browser button — toggles the embedded WKWebView in the answer area.
     private var browserToggleButton: some View {
         Button(action: { model.onToggleBrowser() }) {
             ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(model.isBrowserMode
                           ? Color.teal.opacity(0.55)
-                          : Color.teal.opacity(0.28))
+                          : Color.teal.opacity(0.32))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.white.opacity(0.15), lineWidth: 1)
                     )
                 HStack(spacing: 4) {
                     Image(systemName: model.isBrowserMode ? "globe.americas.fill" : "globe")
@@ -292,10 +298,10 @@ struct PlaceholderPanelView: View {
         }
         .padding(4)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(panelBackgroundColor)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(panelBackgroundColor.opacity(isClear ? 0.85 : 1.0))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .stroke(panelBorderColor, lineWidth: 1)
                 )
                 .shadow(color: .black.opacity(0.50), radius: 10, x: 0, y: 4)
@@ -307,7 +313,7 @@ struct PlaceholderPanelView: View {
     private func providerDropdownRow(provider: Provider) -> some View {
         Button(action: { model.onPickProvider(provider) }) {
             ZStack {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(model.currentProvider == provider
                           ? Color.purple.opacity(0.35)
                           : subtleFill)
@@ -329,14 +335,14 @@ struct PlaceholderPanelView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Chat area (default)
+    // MARK: - Chat area
 
     private var chatArea: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(subtleFill)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .stroke(panelBorderColor, lineWidth: 1)
                 )
 
@@ -355,7 +361,7 @@ struct PlaceholderPanelView: View {
             Image(systemName: "sparkles")
                 .font(.system(size: 22))
                 .foregroundColor(secondaryText)
-            Text("Click Scan, hover Capture, or type below.")
+            Text("Click Scan, hit Camera, or type below.")
                 .font(.system(size: 12))
                 .foregroundColor(secondaryText)
         }
@@ -369,8 +375,7 @@ struct PlaceholderPanelView: View {
                         messageRow(msg)
                     }
                     if let banner = model.statusBanner {
-                        thinkingRow(banner)
-                            .id("thinking")
+                        thinkingRow(banner).id("thinking")
                     }
                     Color.clear.frame(height: 1).id("__bottom")
                 }
@@ -378,21 +383,17 @@ struct PlaceholderPanelView: View {
                 .padding(.vertical, 10)
             }
             .onChange(of: model.chat.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo("__bottom", anchor: .bottom)
-                }
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("__bottom", anchor: .bottom) }
             }
             .onChange(of: model.statusBanner) { _, _ in
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo("__bottom", anchor: .bottom)
-                }
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("__bottom", anchor: .bottom) }
             }
         }
     }
 
     private func messageRow(_ msg: ChatMessage) -> some View {
         HStack(alignment: .top) {
-            if msg.role == .user { Spacer(minLength: 32) }
+            if msg.role == .user { Spacer(minLength: 40) }
             VStack(alignment: msg.role == .user ? .trailing : .leading, spacing: 3) {
                 if msg.hasImage {
                     HStack(spacing: 4) {
@@ -411,18 +412,16 @@ struct PlaceholderPanelView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
                     .background(messageBubbleColor(msg.role))
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
-            if msg.role == .assistant { Spacer(minLength: 32) }
+            if msg.role == .assistant { Spacer(minLength: 40) }
         }
     }
 
     private func messageBubbleColor(_ role: ChatMessage.Role) -> Color {
         switch role {
         case .user:      return Color.blue.opacity(0.35)
-        case .assistant: return colorScheme == .dark
-                            ? Color.white.opacity(0.10)
-                            : Color.black.opacity(0.06)
+        case .assistant: return primaryText.opacity(0.10)
         case .system:    return Color.orange.opacity(0.18)
         }
     }
@@ -437,32 +436,31 @@ struct PlaceholderPanelView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(Color.white.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(primaryText.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     // MARK: - Browser area
 
     private var browserArea: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white)   // browser content needs a solid backdrop
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .stroke(panelBorderColor, lineWidth: 1)
                 )
             BrowserWebViewRepresentable()
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .padding(.horizontal, 12)
         .frame(maxHeight: .infinity)
     }
 
-    // MARK: - Manual input bar (always visible at bottom)
+    // MARK: - Manual input bar
 
     private var manualInputBar: some View {
         HStack(spacing: 6) {
-            // Attached-image pill (only shown when user has a queued image)
             if model.attachedImageThumb != nil {
                 HStack(spacing: 4) {
                     Image(systemName: "photo.fill")
@@ -491,10 +489,10 @@ struct PlaceholderPanelView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
                 .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(subtleFill)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
                                 .stroke(manualFocused ? Color.blue.opacity(0.5) : panelBorderColor,
                                         lineWidth: 1)
                         )
@@ -528,12 +526,11 @@ struct PlaceholderPanelView: View {
 }
 
 // =============================================================================
-//  ThinkingDots — animated three-dot indicator
+//  ThinkingDots
 // =============================================================================
 
 struct ThinkingDots: View {
     @State private var phase: Int = 0
-
     var body: some View {
         HStack(spacing: 3) {
             ForEach(0..<3) { idx in
@@ -554,25 +551,35 @@ struct ThinkingDots: View {
 }
 
 // =============================================================================
-//  BubbleView — answer-bubble (used by the bubble window, separate from panel)
+//  BubbleView
 // =============================================================================
 
 struct PlaceholderBubbleView: View {
     @ObservedObject var model: OverlayModel
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let bg: Color = colorScheme == .dark
-            ? Color(red: 0.07, green: 0.05, blue: 0.12).opacity(0.93)
-            : Color(red: 0.95, green: 0.95, blue: 0.97).opacity(0.95)
-        let border: Color = colorScheme == .dark
-            ? Color.white.opacity(0.10) : Color.black.opacity(0.12)
-        let textColor: Color = colorScheme == .dark ? .white : .black
+        let bg: Color
+        let border: Color
+        let textColor: Color
+        switch model.themeMode {
+        case .dark:
+            bg = Color(red: 0.07, green: 0.05, blue: 0.12).opacity(0.93)
+            border = Color.white.opacity(0.10)
+            textColor = .white
+        case .light:
+            bg = Color(red: 0.95, green: 0.95, blue: 0.97).opacity(0.95)
+            border = Color.black.opacity(0.12)
+            textColor = .black
+        case .clear:
+            bg = Color.black.opacity(0.18)
+            border = Color.white.opacity(0.18)
+            textColor = .white
+        }
 
-        return RoundedRectangle(cornerRadius: 12, style: .continuous)
+        return RoundedRectangle(cornerRadius: 14, style: .continuous)
             .fill(bg)
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .stroke(border, lineWidth: 1)
             )
             .overlay(
@@ -589,27 +596,35 @@ struct PlaceholderBubbleView: View {
 }
 
 // =============================================================================
-//  ResizeGrip — bottom-right resize handle
+//  ResizeGrip — bigger, easier to click, visible affordance
 // =============================================================================
 
 struct ResizeGrip: View {
     let tint: Color
     @State private var startFrame: NSRect?
+    @State private var hovering: Bool = false
 
     var body: some View {
         ZStack {
+            // Visual indicator — diagonal hash lines + faint background pad
+            // so the user can see "this is a draggable corner".
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(hovering ? Color.blue.opacity(0.20) : Color.clear)
+                .frame(width: 28, height: 28)
             Canvas { ctx, size in
                 let s = size.width
-                let stroke = StrokeStyle(lineWidth: 1.2, lineCap: .round)
-                for offset in [0.0, 0.35, 0.70] {
+                let stroke = StrokeStyle(lineWidth: 1.6, lineCap: .round)
+                for offset in [0.15, 0.45, 0.75] {
                     var path = Path()
-                    path.move(to:    CGPoint(x: s,         y: s * offset))
-                    path.addLine(to: CGPoint(x: s * offset, y: s))
+                    path.move(to:    CGPoint(x: s - 2,        y: s * offset + 4))
+                    path.addLine(to: CGPoint(x: s * offset + 4, y: s - 2))
                     ctx.stroke(path, with: .color(tint), style: stroke)
                 }
             }
-            Color.clear
+            .frame(width: 22, height: 22)
         }
+        // Hit area is generous — 40×40 even though the visual is ~28×28.
+        .frame(width: 40, height: 40)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(coordinateSpace: .global)
@@ -628,8 +643,9 @@ struct ResizeGrip: View {
                 }
                 .onEnded { _ in startFrame = nil }
         )
-        .onHover { hovering in
-            if hovering { NSCursor.crosshair.set() } else { NSCursor.arrow.set() }
+        .onHover { isOver in
+            hovering = isOver
+            if isOver { NSCursor.crosshair.set() } else { NSCursor.arrow.set() }
         }
     }
 

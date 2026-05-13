@@ -25,11 +25,6 @@ struct SettingsView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
-                        section(title: "Activation",
-                                hint: "How buttons fire — click them, hover for 1.5s, or both.") {
-                            activationPicker
-                        }
-
                         section(title: "AI Response Length",
                                 hint: "How much detail each scan returns.") {
                             responsePicker
@@ -97,17 +92,6 @@ struct SettingsView: View {
     }
 
     // MARK: - Pickers
-
-    private var activationPicker: some View {
-        segmented(
-            options: ActivationMode.allCases.map { ($0.rawValue, $0.displayName) },
-            current: model.activationMode.rawValue
-        ) { raw in
-            if let m = ActivationMode(rawValue: raw) {
-                model.onSettingsChangedActivation(m)
-            }
-        }
-    }
 
     private var responsePicker: some View {
         segmented(

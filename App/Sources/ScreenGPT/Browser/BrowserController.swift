@@ -34,10 +34,12 @@ final class BrowserController {
         wv.allowsBackForwardNavigationGestures = true
         wv.allowsMagnification = true
         wv.translatesAutoresizingMaskIntoConstraints = false
+        // Start zoomed out so pages fit naturally in the embedded viewport
+        // — the WKWebView's default 1.0 magnification crops the right side
+        // of most desktop sites at the panel's default width.
+        wv.pageZoom = 0.80
         self.webView = wv
 
-        // Load Google on first creation.  Subsequent toggles keep whatever
-        // page the user was on.
         loadHomeIfBlank()
     }
 

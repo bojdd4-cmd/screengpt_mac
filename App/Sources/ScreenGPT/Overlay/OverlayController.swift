@@ -200,12 +200,8 @@ final class OverlayController {
 
     // MARK: - Internals
 
-    /// Week 5: bigger default so chat history + manual input + bigger
-    /// browser viewport all fit comfortably.  User can resize via the
-    /// bottom-right grip; ButtonRects is sized for the default but the
-    /// grip-resize doesn't re-layout dwell hit rects (hover users should
-    /// keep the default size).
-    private let panelSize  = NSSize(width: 720, height: 480)
+    /// Week 6: 720×560 — taller answer area, fits more chat headroom.
+    private let panelSize  = NSSize(width: 720, height: 560)
     private let bubbleSize = NSSize(width: 420, height: 320)
 
     private func ensurePanelWindow() -> NSPanel {
@@ -296,11 +292,15 @@ final class OverlayController {
         // no window covers those pixels.
         panel.ignoresMouseEvents = false
 
-        // Week 5: enable drag-from-any-background so the user can grab the
-        // overlay from any non-button area to move it.  SwiftUI Buttons
-        // intercept their own clicks before the drag is initiated, so
-        // clicking icons / capture / pill still acts as expected — only
-        // empty backdrop pixels become drag handles.
+        // Week 6: panel boots in click-through mode.  InteractionZoneTracker
+        // flips `ignoresMouseEvents` on/off 50×/sec based on cursor position
+        // so clicks pass through to LDB EXCEPT when cursor is over our
+        // chrome (top bar, capture row, manual input, resize grip, browser
+        // when open).
+        panel.ignoresMouseEvents = true
+        // Drag is handled via the wordmark zone — when cursor is in the
+        // brand area, interaction is enabled, the drag gesture catches.
+        // No background drag needed; clicks on chat area go through.
         panel.isMovableByWindowBackground = true
         panel.isMovable = true
 
@@ -322,14 +322,17 @@ final class OverlayController {
         bubbleWindow?.alphaValue = CGFloat(mode.alpha)
     }
 
-    /// Apply the current ThemeMode by flipping the panel's NSAppearance.
-    /// SwiftUI's `@Environment(\.colorScheme)` follows along so views using
-    /// theme-aware colors update automatically.
+    /// Apply the current ThemeMode.  Dark/Light flip NSAppearance so
+    /// SwiftUI's @Environment(.colorScheme) follows along.  Clear keeps
+    /// dark appearance (so text is white) but the views detect
+    /// `themeMode == .clear` and render with near-transparent backdrops.
     func applyTheme(_ mode: ThemeMode) {
         model.themeMode = mode
-        let appearance = (mode == .dark)
-            ? NSAppearance(named: .darkAqua)
-            : NSAppearance(named: .aqua)
+        let appearance: NSAppearance?
+        switch mode {
+        case .dark, .clear: appearance = NSAppearance(named: .darkAqua)
+        case .light:        appearance = NSAppearance(named: .aqua)
+        }
         panelWindow?.appearance  = appearance
         bubbleWindow?.appearance = appearance
     }
@@ -337,11 +340,12 @@ final class OverlayController {
     /// Wire up the action closures invoked by SwiftUI buttons.
     struct Actions {
         var onSettings:           () -> Void
-        var onCycleActivation:    () -> Void
+        var onCycleResponseLen:   () -> Void
         var onToggleContext:      () -> Void
         var onScreenshot:         () -> Void
         var onToggleTheme:        () -> Void
         var onCycleTransparency:  () -> Void
+        var onHide:               () -> Void
         var onClose:              () -> Void
         var onCaptureClicked:     () -> Void
         var onTogglePillTapped:   () -> Void
@@ -349,7 +353,6 @@ final class OverlayController {
         var onToggleBrowser:      () -> Void
         var onSubmitManualAsk:    (String) -> Void
         var onClearAttachedImage: () -> Void
-        var onSettingsChangedActivation:    (ActivationMode)   -> Void
         var onSettingsChangedResponse:      (Int)              -> Void
         var onSettingsChangedTheme:         (ThemeMode)        -> Void
         var onSettingsChangedTransparency:  (TransparencyMode) -> Void
@@ -358,11 +361,12 @@ final class OverlayController {
 
     func wireActions(_ a: Actions) {
         model.onSettings              = a.onSettings
-        model.onCycleActivation       = a.onCycleActivation
+        model.onCycleResponseLen      = a.onCycleResponseLen
         model.onToggleContext         = a.onToggleContext
         model.onScreenshot            = a.onScreenshot
         model.onToggleTheme           = a.onToggleTheme
         model.onCycleTransparency     = a.onCycleTransparency
+        model.onHide                  = a.onHide
         model.onClose                 = a.onClose
         model.onCaptureClicked        = a.onCaptureClicked
         model.onTogglePillTapped      = a.onTogglePillTapped
@@ -370,7 +374,6 @@ final class OverlayController {
         model.onToggleBrowser         = a.onToggleBrowser
         model.onSubmitManualAsk       = a.onSubmitManualAsk
         model.onClearAttachedImage    = a.onClearAttachedImage
-        model.onSettingsChangedActivation   = a.onSettingsChangedActivation
         model.onSettingsChangedResponse     = a.onSettingsChangedResponse
         model.onSettingsChangedTheme        = a.onSettingsChangedTheme
         model.onSettingsChangedTransparency = a.onSettingsChangedTransparency
@@ -407,6 +410,97 @@ final class OverlayController {
 
     var modelContextOn:      Bool       { model.contextOn }
     var modelIsBrowserMode:  Bool       { model.isBrowserMode }
+
+    /// Set the click-through state.  Called by InteractionZoneTracker on
+    /// every cursor-position tick.  Safe to call rapidly — internally a
+    /// no-op when the value is unchanged.
+    func setIgnoresMouseEvents(_ ignores: Bool) {
+        // Only act when the panel exists + the value actually changes.
+        guard let win = panelWindow else { return }
+        if win.ignoresMouseEvents != ignores {
+            win.ignoresMouseEvents = ignores
+        }
+    }
+
+    /// Compute the current interactive-zone rectangles in SCREEN coords.
+    /// AppDelegate hands this to InteractionZoneTracker so the tracker can
+    /// hit-test cursor position against the live UI layout.
+    ///
+    /// Zones (panel-local):
+    ///   • Top bar row              y=0..26
+    ///   • Capture row              y=34..70
+    ///   • Manual input bar         y=panelH-44..panelH-6
+    ///   • Resize grip              y=panelH-24..panelH (bottom-right corner)
+    ///   • Browser area (if on)     covers the answer area
+    ///   • Provider dropdown rows (if expanded)
+    func interactionZones() -> [NSRect] {
+        guard let win = panelWindow, win.isVisible else { return [] }
+        let f = win.frame
+        let pH = f.height
+        let pW = f.width
+
+        // SwiftUI coords are top-down inside the panel; macOS NSWindow.frame
+        // is bottom-up.  So "top bar y=0..26 (top-down)" is actually
+        // "y=pH-26..pH (bottom-up)" relative to panel origin.
+
+        var zones: [NSRect] = []
+
+        // Top bar (whole row — includes brand drag area)
+        zones.append(NSRect(
+            x: f.origin.x,
+            y: f.origin.y + pH - 26 - 10,    // +10 for vertical padding inside panel
+            width: pW,
+            height: 26 + 10
+        ))
+
+        // Capture row
+        zones.append(NSRect(
+            x: f.origin.x + 12,
+            y: f.origin.y + pH - 26 - 8 - 36 - 10,
+            width: pW - 24,
+            height: 36
+        ))
+
+        // Manual input bar (bottom)
+        zones.append(NSRect(
+            x: f.origin.x + 12,
+            y: f.origin.y + 6,
+            width: pW - 24,
+            height: 44
+        ))
+
+        // Resize grip (bottom-right, generous hit area)
+        zones.append(NSRect(
+            x: f.origin.x + pW - 40,
+            y: f.origin.y,
+            width: 40,
+            height: 40
+        ))
+
+        // Browser area covers the middle band when toggle is on
+        if model.isBrowserMode {
+            let topY = f.origin.y + 6 + 44 + 4          // above input bar
+            let botY = f.origin.y + pH - 70 - 10 - 8    // below capture row
+            zones.append(NSRect(
+                x: f.origin.x + 12,
+                y: topY,
+                width: pW - 24,
+                height: botY - topY
+            ))
+        }
+
+        // Provider dropdown rows (when expanded) — overlay over capture row
+        if model.providerDropdownExpanded {
+            zones.append(NSRect(
+                x: f.origin.x + 140,
+                y: f.origin.y + pH - 76 - 4 - (28 * 4) - 4,
+                width: 130,
+                height: 28 * 4 + 8
+            ))
+        }
+
+        return zones
+    }
 
     private func positionInCorner(_ window: NSPanel, corner: Int, size: NSSize) {
         guard let screen = NSScreen.main else { return }
