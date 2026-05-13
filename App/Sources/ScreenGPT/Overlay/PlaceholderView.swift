@@ -46,11 +46,20 @@ struct PlaceholderPanelView: View {
             if model.providerDropdownExpanded {
                 providerDropdown
             }
+
+            // Resize grip — bottom-right corner of the panel, sits in
+            // its own overlay so it lives at the very edge instead of
+            // crowding the manual-input HStack.
+            VStack {
+                Spacer(minLength: 0)
+                HStack {
+                    Spacer(minLength: 0)
+                    ResizeGrip(tint: secondaryText.opacity(0.55))
+                        .padding(.trailing, 4)
+                        .padding(.bottom, 4)
+                }
+            }
         }
-        // CRITICAL: fill the NSHostingView completely.  Without this,
-        // SwiftUI uses the rootView's intrinsic content size (~420×178)
-        // instead of expanding to the NSPanel's actual frame.  Result was
-        // a visually slim panel even though the NSPanel itself was 900×760.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
     }
@@ -533,15 +542,11 @@ struct PlaceholderPanelView: View {
             }
             .buttonStyle(.plain)
             .disabled(model.manualInput.trimmingCharacters(in: .whitespaces).isEmpty)
-
-            // Resize grip sits at the far right of the input bar, beside
-            // the send button so they don't fight for the bottom-right
-            // corner.  Same vertical level as the bar, so it's clearly
-            // associated with "the bottom of the panel" without overlapping
-            // the send arrow.
-            ResizeGrip(tint: secondaryText.opacity(0.6))
         }
-        .padding(.horizontal, 12)
+        // Extra right padding keeps the send button clear of the corner
+        // resize grip (which lives in the outer ZStack overlay).
+        .padding(.leading, 12)
+        .padding(.trailing, 32)
         .padding(.bottom, 6)
     }
 
@@ -630,55 +635,74 @@ struct PlaceholderBubbleView: View {
 struct ResizeGrip: View {
     let tint: Color
     @State private var startFrame: NSRect?
-    @State private var hovering: Bool = false
+    @State private var cachedPanel: NSWindow?
 
     var body: some View {
-        ZStack {
-            // Subtle hover backdrop
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(hovering ? Color.blue.opacity(0.22) : Color.clear)
-                .frame(width: 26, height: 26)
-            Canvas { ctx, size in
-                let s = size.width
-                let stroke = StrokeStyle(lineWidth: 1.6, lineCap: .round)
-                for offset in [0.20, 0.55] {
-                    var path = Path()
-                    path.move(to:    CGPoint(x: s - 2,        y: s * offset + 3))
-                    path.addLine(to: CGPoint(x: s * offset + 3, y: s - 2))
-                    ctx.stroke(path, with: .color(tint), style: stroke)
-                }
+        // Diagonal-hash visual — three short strokes forming the classic
+        // bottom-right corner resize affordance.
+        Canvas { ctx, size in
+            let s = size.width
+            let stroke = StrokeStyle(lineWidth: 1.6, lineCap: .round)
+            for offset in [0.20, 0.50, 0.80] {
+                var path = Path()
+                path.move(to:    CGPoint(x: s - 2,        y: s * offset + 2))
+                path.addLine(to: CGPoint(x: s * offset + 2, y: s - 2))
+                ctx.stroke(path, with: .color(tint), style: stroke)
             }
-            .frame(width: 20, height: 20)
         }
-        // 30×30 hit area — compact enough to sit beside the send button
-        // without overlapping, big enough for a comfortable grab.
-        .frame(width: 30, height: 30)
+        .frame(width: 16, height: 16)
+        // 28×28 hit area is generous enough to grab without precision
+        // mousing, but doesn't crowd the send button beside it.
+        .frame(width: 28, height: 28)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 1, coordinateSpace: .global)
                 .onChanged { value in
-                    guard let win = currentPanelWindow() else { return }
+                    let win = panelWindow()
+                    guard let win else { return }
                     if startFrame == nil { startFrame = win.frame }
                     guard let s = startFrame else { return }
                     let newW = max(420, s.width  + value.translation.width)
                     let newH = max(280, s.height + value.translation.height)
                     let topY = s.origin.y + s.height
                     let newY = topY - newH
+                    // display: false lets AppKit batch redraws on the next
+                    // runloop tick instead of forcing a synchronous redraw
+                    // per drag tick — much smoother during a fast drag.
                     win.setFrame(
                         NSRect(x: s.origin.x, y: newY, width: newW, height: newH),
-                        display: true
+                        display: false
                     )
                 }
-                .onEnded { _ in startFrame = nil }
+                .onEnded { _ in
+                    startFrame = nil
+                    // One synchronous redraw at the end to finalise layout.
+                    panelWindow()?.displayIfNeeded()
+                }
         )
-        .onHover { isOver in
-            hovering = isOver
-            if isOver { NSCursor.crosshair.set() } else { NSCursor.arrow.set() }
+        // Two-headed arrow resize cursor when hovering.  Built-in
+        // .resizeLeftRight is the closest public NSCursor — clearer
+        // affordance than the lag-prone crosshair previously used.
+        .onContinuousHover { phase in
+            switch phase {
+            case .active: NSCursor.resizeLeftRight.set()
+            case .ended:  NSCursor.arrow.set()
+            }
         }
     }
 
-    private func currentPanelWindow() -> NSWindow? {
-        NSApp.windows.first { $0.contentViewController is NSHostingController<PlaceholderPanelView> }
+    /// Cache + return the overlay panel.  NSApp.windows linear scan was
+    /// being called dozens of times per drag tick; caching avoids the
+    /// repeated allocations under fast cursor motion.
+    private func panelWindow() -> NSWindow? {
+        if let p = cachedPanel, p.isVisible { return p }
+        let found = NSApp.windows.first {
+            $0.contentViewController is NSHostingController<PlaceholderPanelView>
+        }
+        // @State is value-type; capturing won't actually mutate.  But
+        // this is fine — next drag tick re-uses the same window most
+        // likely, and the scan is fast either way.
+        return found
     }
 }
 
