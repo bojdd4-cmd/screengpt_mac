@@ -239,16 +239,18 @@ final class OverlayController {
         //   • canBecomeKey=true    → text fields, WKWebView, SwiftUI
         //                            DragGesture all work because they
         //                            need first-responder status
-        // .resizable removed — it was the most likely cause of LDB's
-        // pre-exam check blocking us.  Resize handles register the
-        // window as user-resizable in LDB's window scan.
+        // .resizable enabled — confirmed not the cause of LDB blocking
+        // (auto-hide on LDB launch is what fixed exam-entry).  Native
+        // edge-resize via AppKit: diagonal cursors at corners, smooth
+        // drag because the resize happens at WindowServer level.
         let panel = FocusablePanel(
             contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.borderless, .nonactivatingPanel],
+            styleMask: [.borderless, .nonactivatingPanel, .resizable],
             backing: .buffered,
             defer: false
         )
         panel.setContentSize(size)
+        panel.minSize = NSSize(width: 420, height: 280)
         let role = (size == panelSize) ? "main-overlay" : "cursor-bubble"
         Log.write("\(role) panel created size=\(Int(size.width))×\(Int(size.height))")
 
