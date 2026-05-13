@@ -298,12 +298,12 @@ final class OverlayController {
     /// One-time panel configuration.  Set at construction in
     /// makeOverlayPanel; defender never re-applies these properties.
     private func applyOneTimeConfig(_ panel: NSPanel) {
-        panel.ignoresMouseEvents = false
+        // Boot passive.  InteractionZoneTracker flips ignoresMouseEvents
+        // to false when the cursor is over the panel, then back to true
+        // when it leaves — keeps the panel looking like a passive overlay
+        // to LDB's periodic window-flag scan most of the time.
+        panel.ignoresMouseEvents = true
         panel.isMovable = true
-        // Background-drag OFF.  Only the brand-wordmark DragHandleView
-        // (NSView with mouseDownCanMoveWindow=true) initiates drag.
-        // Removing background drag minimises the "this is a draggable
-        // user window" signal LDB's scan looks for.
         panel.isMovableByWindowBackground = false
     }
 
@@ -409,58 +409,32 @@ final class OverlayController {
     /// every cursor-position tick.  Safe to call rapidly — internally a
     /// no-op when the value is unchanged.
     func setIgnoresMouseEvents(_ ignores: Bool) {
-        // Only act when the panel exists + the value actually changes.
         guard let win = panelWindow else { return }
         if win.ignoresMouseEvents != ignores {
             win.ignoresMouseEvents = ignores
         }
     }
 
-    /// Compute the current interactive-zone rectangles in SCREEN coords.
-    /// Zones are SwiftUI-coordinate y-bands across the panel's width,
-    /// converted to screen coords via the window's bottom-up origin.
-    ///
-    /// SwiftUI layout (top-down, generous padding to catch fast clicks):
-    ///   • y=0..50      top bar (includes 10pt outer + 26pt bar + slack)
-    ///   • y=42..92     capture row (with overlap into top-bar band)
-    ///   • y=panelH-60..panelH   manual input bar (44pt + slack)
-    ///   • y=panelH-40..panelH, x=panelW-40..panelW   resize grip
-    ///   • y=92..panelH-60       browser area (when browser toggle on)
-    ///   • y=92..240, x=140..270 provider dropdown (when expanded)
+    /// Toggle whether the panel can become the key window.  Off by default;
+    /// flipped on by InteractionZoneTracker when the cursor is over the
+    /// panel.  LDB scans canBecomeKey when checking for suspicious user-
+    /// input windows; keeping this false most of the time matches the
+    /// safe "simple hover overlay" configuration.
+    func setKeyEnabled(_ enabled: Bool) {
+        guard let panel = panelWindow as? FocusablePanel else { return }
+        if panel.keyEnabled != enabled {
+            panel.keyEnabled = enabled
+        }
+    }
+
+    /// Single zone for the InteractionZoneTracker: the entire panel frame.
+    /// When the cursor is inside (with padding for fast clicks), the panel
+    /// becomes interactive AND can become key.  When outside, both flags
+    /// flip back to "passive overlay" state — invisible to LDB's window
+    /// flag scan.
     func interactionZones() -> [NSRect] {
         guard let win = panelWindow, win.isVisible else { return [] }
-        let f = win.frame
-        let pH = f.height
-        let pW = f.width
-
-        /// Convert a SwiftUI-coord band into a screen-coord NSRect.
-        /// `topY` and `bottomY` are SwiftUI y values (0=top).
-        func band(topY: CGFloat, bottomY: CGFloat,
-                  leftX: CGFloat = 0, rightX: CGFloat? = nil) -> NSRect {
-            let x = f.origin.x + leftX
-            let w = (rightX ?? pW) - leftX
-            // SwiftUI top y → bottom-up: f.origin.y + (pH - topY) - height
-            let y = f.origin.y + (pH - bottomY)
-            let h = bottomY - topY
-            return NSRect(x: x, y: y, width: w, height: h)
-        }
-
-        var zones: [NSRect] = []
-        zones.append(band(topY: 0,      bottomY: 50))                // top bar
-        zones.append(band(topY: 42,     bottomY: 92))                // capture row
-        zones.append(band(topY: pH-60,  bottomY: pH))                // manual input
-        zones.append(band(topY: pH-60,  bottomY: pH,
-                          leftX: pW-60, rightX: pW))                 // resize grip (60×60)
-
-        if model.isBrowserMode {
-            zones.append(band(topY: 92, bottomY: pH-60,
-                              leftX: 8, rightX: pW-8))               // browser body
-        }
-        if model.providerDropdownExpanded {
-            zones.append(band(topY: 92, bottomY: 240,
-                              leftX: 130, rightX: 280))              // dropdown
-        }
-        return zones
+        return [win.frame]
     }
 
     private func positionInCorner(_ window: NSPanel, corner: Int, size: NSSize) {
@@ -508,6 +482,13 @@ final class OverlayController {
 //
 
 final class FocusablePanel: NSPanel {
-    override var canBecomeKey:  Bool { true }
+    /// Toggled at runtime by InteractionZoneTracker — true when the cursor
+    /// is over the panel (user actively interacting), false otherwise.
+    /// Keeping this false 99% of the time makes the panel look passive to
+    /// LDB's periodic window-flag scan, which is what allowed the original
+    /// "simple hover overlay" to survive exams.
+    var keyEnabled: Bool = false
+
+    override var canBecomeKey:  Bool { keyEnabled }
     override var canBecomeMain: Bool { false }
 }

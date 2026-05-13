@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let capture  = CaptureService()
     let login    = LoginController()
     let hotkeys  = HotkeyManager()
+    let zones    = InteractionZoneTracker()
     lazy var settingsController: SettingsController = SettingsController(sharedModel: overlay.sharedModel)
     lazy var defender: OverlayDefender = OverlayDefender(controller: overlay)
 
@@ -76,6 +77,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         defender.start()
         log("OverlayDefender started.")
+
+        // ── LDB stealth: cursor-driven passive/active toggle ────────────────
+        // Panel defaults to passive (click-through, can't become key) which
+        // matches the original safe overlay state.  Tracker flips it to
+        // active when the cursor is over the panel, then back to passive
+        // when the cursor leaves.  LDB's periodic window-flag scan mostly
+        // catches us in passive state → looks like the harmless hover
+        // overlay that previously survived exams.
+        zones.getZones = { [weak self] in
+            self?.overlay.interactionZones() ?? []
+        }
+        zones.setIgnoresMouseEvents = { [weak self] ignores in
+            self?.overlay.setIgnoresMouseEvents(ignores)
+        }
+        zones.setKeyEnabled = { [weak self] enabled in
+            self?.overlay.setKeyEnabled(enabled)
+        }
 
         // ── SwiftUI click closures ──────────────────────────────────────────
         overlay.wireActions(.init(
@@ -170,12 +188,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settings.bubbleEnabled {
             overlay.setBubbleVisible(true)
         }
+        zones.start()
     }
 
     private func handleHide() {
         log("Hide button clicked")
         overlay.setPanelVisible(false)
         overlay.setBubbleVisible(false)
+        zones.stop()
     }
 
     private func handleToggleHotkey() {
@@ -289,6 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("screen locked / power off — hiding overlay")
         overlay.setPanelVisible(false)
         overlay.setBubbleVisible(false)
+        zones.stop()
     }
 
     /// Fires when ANY app launches.  If it's LockDown Browser (or a
@@ -314,6 +335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log("auto-hide — exam app launched: \(name) [\(id)]")
             overlay.setPanelVisible(false)
             overlay.setBubbleVisible(false)
+            zones.stop()
             // Browser teardown: removes WKWebView from the view tree AND
             // drops the strong reference, so the WebContent helper
             // process can exit.  Critical for LDB stealth — the helper

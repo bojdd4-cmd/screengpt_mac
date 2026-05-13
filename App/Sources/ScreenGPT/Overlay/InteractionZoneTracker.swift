@@ -2,22 +2,24 @@
 //  InteractionZoneTracker.swift
 //  ScreenGPT
 //
-//  The killer-feature: panel-wide click-through with selective interaction
-//  zones.  The NSPanel's `ignoresMouseEvents` flips 50× per second based on
-//  whether the cursor is currently over an interactive control rect.
+//  Cursor-position tracker that flips the overlay panel between
+//  "passive" and "active" states based on whether the cursor is
+//  currently over the panel.
 //
-//  Click happens INSIDE a zone     → panel captures it, SwiftUI Button fires
-//  Click happens OUTSIDE all zones → panel ignores it, click passes through
-//                                    to whatever's beneath (LockDown, your
-//                                    text editor, etc.)
+//    PASSIVE (default, most of the time):
+//      • ignoresMouseEvents = true   — clicks pass through to LDB
+//      • canBecomeKey       = false  — panel can't take keyboard focus
+//      → Window flags match the original "simple hover overlay" that
+//        survived LDB's periodic process-kill scans.
 //
-//  Mirrors CloakGPT's "always click-through except on the chrome" behaviour.
+//    ACTIVE (cursor over panel + padding):
+//      • ignoresMouseEvents = false  — clicks land on SwiftUI views
+//      • canBecomeKey       = true   — text fields can focus, browser works
+//      → Brief windows of "user is actively interacting" — LDB's scan
+//        rarely catches us here statistically.
 //
-//  Zones are screen-coordinate rects.  AppDelegate computes them every tick
-//  based on the panel's current frame + UI state (browser open?, dropdown
-//  open?).  We expand each zone by `padding` pixels so a fast click that
-//  arrives a millisecond before the cursor visually enters the zone still
-//  lands.
+//  10 ms polling for fast response to cursor entry/exit.  10 px padding
+//  around the panel frame so the user doesn't have to be pixel-perfect.
 //
 
 import AppKit
@@ -26,17 +28,21 @@ import Foundation
 @MainActor
 final class InteractionZoneTracker {
 
-    /// Closure providing the current interactive zones in screen coords.
-    /// Refreshed every tick — must be fast.
+    /// Closure returning the current panel frame(s).  Empty array means
+    /// "panel not visible, force passive state".
     var getZones: () -> [NSRect] = { [] }
 
-    /// Called when the click-through state should flip.  AppDelegate hooks
-    /// this to `panelWindow.ignoresMouseEvents = value`.
+    /// Set the panel's click-through state.  Wired in AppDelegate to
+    /// OverlayController.setIgnoresMouseEvents.
     var setIgnoresMouseEvents: (Bool) -> Void = { _ in }
 
-    /// Expand each zone by this many pixels — buffers fast clicks that land
-    /// a moment before the cursor visually enters the chrome.
-    var padding: CGFloat = 4
+    /// Set the panel's canBecomeKey behaviour.  Wired in AppDelegate to
+    /// OverlayController.setKeyEnabled.
+    var setKeyEnabled: (Bool) -> Void = { _ in }
+
+    /// Pixels of slack around each zone — helps fast cursor movement
+    /// catch the panel before the click arrives.
+    var padding: CGFloat = 10
 
     private let pollQueue = DispatchQueue(
         label: "com.colorlab.calibration.zonetracker",
@@ -49,7 +55,7 @@ final class InteractionZoneTracker {
             guard timer == nil else { return }
             let t = DispatchSource.makeTimerSource(queue: pollQueue)
             t.schedule(deadline: .now() + .milliseconds(10),
-                       repeating: .milliseconds(20))
+                       repeating: .milliseconds(10))
             t.setEventHandler { [weak self] in
                 Task { @MainActor [weak self] in self?.tick() }
             }
@@ -63,22 +69,25 @@ final class InteractionZoneTracker {
             timer?.cancel()
             timer = nil
         }
+        // Force back to passive on stop.
+        setIgnoresMouseEvents(true)
+        setKeyEnabled(false)
     }
 
-    /// Compute and apply on every tick.  We don't memoise the previous
-    /// value because OverlayDefender (or anything else that touches the
-    /// NSPanel) could reset `ignoresMouseEvents` out from under us — by
-    /// always re-writing, we recover within 20 ms of any external
-    /// interference.  The OverlayController's setter is idempotent, so
-    /// no-op writes are essentially free.
+    /// Computed every 10 ms.  Always writes (no memoised state) so any
+    /// rogue external reset of the flags recovers within one tick.
     private func tick() {
         let mouse = NSEvent.mouseLocation
         let zones = getZones()
         var inside = false
         for rect in zones {
-            let padded = rect.insetBy(dx: -padding, dy: -padding)
-            if padded.contains(mouse) { inside = true; break }
+            if rect.insetBy(dx: -padding, dy: -padding).contains(mouse) {
+                inside = true
+                break
+            }
         }
+        // Active when cursor is over panel; passive otherwise.
         setIgnoresMouseEvents(!inside)
+        setKeyEnabled(inside)
     }
 }
