@@ -106,7 +106,11 @@ static id sgpt_launchObserver = nil;
 /// Build and show the overlay panel.  Must run on the main thread AFTER
 /// NSApp has finished launching.
 static void sgpt_show_overlay(void) {
-    if (sgpt_panel) return;
+    if (sgpt_panel) {
+        sgpt_log(@"           sgpt_show_overlay called but panel already exists");
+        return;
+    }
+    sgpt_log(@"           sgpt_show_overlay — building NSPanel");
 
     NSRect frame = NSMakeRect(0, 0, 420, 280);
     sgpt_panel = [[NSPanel alloc] initWithContentRect:frame
@@ -174,7 +178,11 @@ static void sgpt_show_overlay(void) {
 
     [sgpt_panel orderFrontRegardless];
 
-    sgpt_log(@"           overlay panel shown");
+    sgpt_log([NSString stringWithFormat:
+              @"           overlay panel shown — frame=%@ isVisible=%d level=%ld",
+              NSStringFromRect(sgpt_panel.frame),
+              (int)sgpt_panel.isVisible,
+              (long)sgpt_panel.level]);
 }
 
 /// Called once the host's NSApplication has finished launching — safe
@@ -193,6 +201,38 @@ static void sgpt_on_app_launched(NSNotification *note) {
 //  Constructor — entrypoint when dyld loads us
 // =============================================================================
 
+/// Poll NSApp every 250ms until it's running, then show the overlay.
+/// Chromium-style apps (Electron, LockDown Browser) often delay
+/// NSApp.run() significantly past dylib load time, and some don't
+/// reliably fire NSApplicationDidFinishLaunchingNotification.  Polling
+/// avoids both problems.
+static void sgpt_retry_show_overlay(int attempt) {
+    @autoreleasepool {
+        BOOL nsappReady = (NSApp != nil) && NSApp.isRunning;
+        sgpt_log([NSString stringWithFormat:
+                  @"           [retry %d] NSApp=%@ isRunning=%d mainScreen=%@",
+                  attempt,
+                  NSApp ? @"present" : @"nil",
+                  NSApp ? (int)NSApp.isRunning : -1,
+                  [NSScreen mainScreen] ? @"present" : @"nil"]);
+
+        if (nsappReady) {
+            sgpt_show_overlay();
+            return;
+        }
+
+        if (attempt >= 240) {  // 240 × 250ms = 60s give-up
+            sgpt_log(@"           [retry] gave up after 60s, NSApp never ready");
+            return;
+        }
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)),
+                       dispatch_get_main_queue(), ^{
+            sgpt_retry_show_overlay(attempt + 1);
+        });
+    }
+}
+
 __attribute__((constructor))
 static void screengpt_dylib_load(void) {
     @autoreleasepool {
@@ -202,26 +242,12 @@ static void screengpt_dylib_load(void) {
             sgpt_log(@"           → not target, exiting constructor cleanly");
             return;
         }
-        sgpt_log(@"           → TARGET MATCH, scheduling overlay setup");
+        sgpt_log(@"           → TARGET MATCH, scheduling overlay setup (poll-based)");
 
-        // Defer to the main thread, after NSApplication is up.  If
-        // NSApp is already non-nil (rare for this early phase), we
-        // can show immediately on the main queue.  Otherwise register
-        // the observer.
+        // Schedule on main queue.  First tick runs as soon as the run
+        // loop is processing dispatch events.
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (NSApp != nil && NSApp.isRunning) {
-                sgpt_log(@"           NSApp already running, showing overlay immediately");
-                sgpt_show_overlay();
-            } else {
-                sgpt_log(@"           NSApp not ready, waiting for didFinishLaunchingNotification");
-                sgpt_launchObserver = [[NSNotificationCenter defaultCenter]
-                    addObserverForName:NSApplicationDidFinishLaunchingNotification
-                                object:nil
-                                 queue:[NSOperationQueue mainQueue]
-                            usingBlock:^(NSNotification * _Nonnull n) {
-                    sgpt_on_app_launched(n);
-                }];
-            }
+            sgpt_retry_show_overlay(0);
         });
     }
 }
