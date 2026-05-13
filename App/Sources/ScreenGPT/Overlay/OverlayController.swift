@@ -200,8 +200,10 @@ final class OverlayController {
 
     // MARK: - Internals
 
-    /// 900×760 — comfortable workspace: ~600 px chat area.
-    private let panelSize  = NSSize(width: 900, height: 760)
+    /// 420×380 default — user-requested compact size.  Resize grip drags
+    /// down to a min of 420×280; SwiftUI rootView now fills the whole
+    /// panel via `.frame(maxWidth: .infinity, maxHeight: .infinity)`.
+    private let panelSize  = NSSize(width: 420, height: 380)
     private let bubbleSize = NSSize(width: 420, height: 320)
 
     private func ensurePanelWindow() -> NSPanel {

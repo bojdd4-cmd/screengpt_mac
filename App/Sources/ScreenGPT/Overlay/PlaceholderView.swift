@@ -47,6 +47,11 @@ struct PlaceholderPanelView: View {
                 providerDropdown
             }
         }
+        // CRITICAL: fill the NSHostingView completely.  Without this,
+        // SwiftUI uses the rootView's intrinsic content size (~420×178)
+        // instead of expanding to the NSPanel's actual frame.  Result was
+        // a visually slim panel even though the NSPanel itself was 900×760.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
     }
 
@@ -241,15 +246,16 @@ struct PlaceholderPanelView: View {
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(Color.white.opacity(isClear ? 0.10 : 0.15), lineWidth: 1)
                     )
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Image(systemName: model.isScanning ? "hourglass" : "viewfinder")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text(model.isScanning ? "Scan…" : "Scan")
                         .font(.system(size: 12, weight: .semibold))
+                    Text(model.isScanning ? "Scan…" : "Scan")
+                        .font(.system(size: 11, weight: .semibold))
                 }
                 .foregroundColor(.white)
             }
-            .frame(width: 120, height: 36)
+            .frame(maxWidth: .infinity)
+            .frame(height: 36)
         }
         .buttonStyle(.plain)
         .disabled(model.isScanning)
@@ -264,16 +270,17 @@ struct PlaceholderPanelView: View {
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(Color.white.opacity(isClear ? 0.10 : 0.15), lineWidth: 1)
                     )
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Text(model.currentProvider.displayName)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                     Image(systemName: model.providerDropdownExpanded
                           ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 8, weight: .semibold))
                 }
                 .foregroundColor(.white)
             }
-            .frame(width: 130, height: 36)
+            .frame(maxWidth: .infinity)
+            .frame(height: 36)
         }
         .buttonStyle(.plain)
     }
@@ -288,15 +295,16 @@ struct PlaceholderPanelView: View {
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(Color.white.opacity(isClear ? 0.10 : 0.15), lineWidth: 1)
                     )
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Image(systemName: model.isBrowserMode ? "globe.americas.fill" : "globe")
                         .font(.system(size: 11, weight: .semibold))
-                    Text(model.isBrowserMode ? "Close Web" : "Web")
-                        .font(.system(size: 12, weight: .semibold))
+                    Text(model.isBrowserMode ? "Close" : "Web")
+                        .font(.system(size: 11, weight: .semibold))
                 }
                 .foregroundColor(.white)
             }
-            .frame(width: 130, height: 36)
+            .frame(maxWidth: .infinity)
+            .frame(height: 36)
         }
         .buttonStyle(.plain)
     }
